@@ -17,52 +17,58 @@ tavily = None
 if TAVILY_API_KEY:
     tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
-# --- THE MODEL HUNT ---
-# We will try these models in order until one works.
-MODELS_TO_TRY = [
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
-    "gemini-1.0-pro",
-    "gemini-pro"
-]
+# ---------------------------------------------------------
+# DYNAMIC MODEL FINDER (The Fix)
+# ---------------------------------------------------------
+def get_working_model():
+    """
+    Asks Google: 'Which models does this API Key have access to?'
+    Returns the first one that supports text generation.
+    """
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        
+        # Look for a model that supports 'generateContent'
+        if 'models' in data:
+            for model in data['models']:
+                if 'generateContent' in model.get('supportedGenerationMethods', []):
+                    # Google returns "models/gemini-pro", we need just "gemini-pro"
+                    model_name = model['name'].split('/')[-1]
+                    print(f"🔎 Found working model: {model_name}")
+                    return model_name
+    except Exception as e:
+        print(f"Model Discovery Failed: {e}")
+    
+    # Fallback if discovery fails
+    return "gemini-1.5-flash"
 
 def ask_google_ai(prompt):
-    last_error = ""
+    # 1. Find the right model
+    model_name = get_working_model()
     
-    for model in MODELS_TO_TRY:
-        print(f"⚡ Trying model: {model}...")
+    # 2. Use that model
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }]
+    }
+    
+    response = requests.post(url, headers=headers, json=payload)
+    
+    if response.status_code != 200:
+        print(f"GOOGLE ERROR: {response.text}")
+        raise Exception(f"Google Error {response.status_code}: {response.text}")
         
-        # Try connecting to this specific model
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
-        headers = {'Content-Type': 'application/json'}
-        payload = {
-            "contents": [{
-                "parts": [{"text": prompt}]
-            }]
-        }
-        
-        try:
-            response = requests.post(url, headers=headers, json=payload)
-            
-            # If successful (Status 200), return the text immediately
-            if response.status_code == 200:
-                print(f"✅ SUCCESS with {model}!")
-                return response.json()['candidates'][0]['content']['parts'][0]['text']
-            else:
-                # If failed, log it and let the loop try the next one
-                print(f"❌ {model} failed: {response.text}")
-                last_error = response.text
-                
-        except Exception as e:
-            print(f"Connection Error with {model}: {e}")
-            
-    # If we tried ALL models and none worked, then crash
-    raise Exception(f"All Google Models Failed. Last Error: {last_error}")
+    return response.json()['candidates'][0]['content']['parts'][0]['text']
 
 SYSTEM_PROMPT = """
 You are the "Dynamic Trip Companion".
-OBJECTIVE: Return a JSON plan based on inputs.
-- Prioritize "User Places".
+OBJECTIVE: Return a JSON plan.
+- Prioritize Bucket List.
 - If empty, use Search Results.
 
 OUTPUT JSON FORMAT:
@@ -119,10 +125,9 @@ def plan_trip():
     try:
         full_prompt = f"{SYSTEM_PROMPT}\n\nUSER DATA: {json.dumps(data)}\nSEARCH RESULTS: {search_context}"
         
-        # This will now auto-hunt for a working model
         json_response_string = ask_google_ai(full_prompt)
         
-        # Clean markdown if present
+        # Clean markdown
         clean_json = json_response_string.replace("```json", "").replace("```", "")
         
         return jsonify(json.loads(clean_json))
