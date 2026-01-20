@@ -18,8 +18,8 @@ if TAVILY_API_KEY:
     tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
 def ask_google_ai(prompt):
-    # SWITCHED TO GEMINI-PRO (The standard model that always works)
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
+    # CHANGED TO V1 (Stable) and gemini-pro
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
     headers = {'Content-Type': 'application/json'}
     payload = {
         "contents": [{
@@ -29,17 +29,17 @@ def ask_google_ai(prompt):
     
     response = requests.post(url, headers=headers, json=payload)
     
-    # If error, print the full Google message to logs so we can see it
     if response.status_code != 200:
-        print(f"GOOGLE API ERROR DETAILS: {response.text}")
-        raise Exception(f"Google Error: {response.status_code}")
+        # Print exact error to logs
+        print(f"GOOGLE ERROR: {response.text}")
+        raise Exception(f"Google Error {response.status_code}: {response.text}")
         
     return response.json()['candidates'][0]['content']['parts'][0]['text']
 
 SYSTEM_PROMPT = """
 You are the "Dynamic Trip Companion".
-OBJECTIVE: Return a JSON plan based on inputs.
-- Prioritize "User Places" (Bucket List).
+OBJECTIVE: Return a JSON plan.
+- Prioritize Bucket List.
 - If empty, use Search Results.
 
 OUTPUT JSON FORMAT:
@@ -96,10 +96,9 @@ def plan_trip():
     try:
         full_prompt = f"{SYSTEM_PROMPT}\n\nUSER DATA: {json.dumps(data)}\nSEARCH RESULTS: {search_context}"
         
-        # Direct call
         json_response_string = ask_google_ai(full_prompt)
         
-        # Clean up code blocks if Google adds them
+        # Clean markdown
         clean_json = json_response_string.replace("```json", "").replace("```", "")
         
         return jsonify(json.loads(clean_json))
