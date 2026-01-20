@@ -17,39 +17,12 @@ tavily = None
 if TAVILY_API_KEY:
     tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
-# ---------------------------------------------------------
-# DYNAMIC MODEL FINDER (The Fix)
-# ---------------------------------------------------------
-def get_working_model():
-    """
-    Asks Google: 'Which models does this API Key have access to?'
-    Returns the first one that supports text generation.
-    """
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
-    try:
-        response = requests.get(url)
-        data = response.json()
-        
-        # Look for a model that supports 'generateContent'
-        if 'models' in data:
-            for model in data['models']:
-                if 'generateContent' in model.get('supportedGenerationMethods', []):
-                    # Google returns "models/gemini-pro", we need just "gemini-pro"
-                    model_name = model['name'].split('/')[-1]
-                    print(f"🔎 Found working model: {model_name}")
-                    return model_name
-    except Exception as e:
-        print(f"Model Discovery Failed: {e}")
-    
-    # Fallback if discovery fails
-    return "gemini-1.5-flash"
-
 def ask_google_ai(prompt):
-    # 1. Find the right model
-    model_name = get_working_model()
-    
-    # 2. Use that model
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+    # ------------------------------------------------------------------
+    # FIX: We use the 'v1' endpoint which is the most stable for all keys.
+    # We use 'gemini-pro' which is the standard text model.
+    # ------------------------------------------------------------------
+    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
     headers = {'Content-Type': 'application/json'}
     payload = {
         "contents": [{
@@ -61,15 +34,32 @@ def ask_google_ai(prompt):
     
     if response.status_code != 200:
         print(f"GOOGLE ERROR: {response.text}")
-        raise Exception(f"Google Error {response.status_code}: {response.text}")
+        # Fallback: If v1 fails, try v1beta with 1.5-flash as a backup
+        return ask_google_ai_backup(prompt)
         
     return response.json()['candidates'][0]['content']['parts'][0]['text']
 
+def ask_google_ai_backup(prompt):
+    print("⚠️ Trying Backup Model (Flash)...")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    headers = {'Content-Type': 'application/json'}
+    payload = { "contents": [{ "parts": [{"text": prompt}] }] }
+    response = requests.post(url, headers=headers, json=payload)
+    if response.status_code != 200:
+        raise Exception(f"All Models Failed. Google Error: {response.text}")
+    return response.json()['candidates'][0]['content']['parts'][0]['text']
+
+# ------------------------------------------------------------------
+# PROMPT UPDATE: We force the AI to generate a plan even with no data.
+# ------------------------------------------------------------------
 SYSTEM_PROMPT = """
 You are the "Dynamic Trip Companion".
-OBJECTIVE: Return a JSON plan.
-- Prioritize Bucket List.
-- If empty, use Search Results.
+OBJECTIVE: Return a JSON plan based on user inputs.
+
+RULES:
+1. Prioritize "User Places" (Bucket List) if provided.
+2. If "User Places" is empty, use "Search Results".
+3. **CRITICAL:** If Search Results are also empty, USE YOUR OWN KNOWLEDGE of the city to create a plan. DO NOT return an error message. Always return a valid JSON plan.
 
 OUTPUT JSON FORMAT:
 {
@@ -97,14 +87,13 @@ def plan_trip():
     data = request.json
     print("Received Data:", data)
 
-    # 1. SETUP LOCATION
     location = data['context'].get('location', 'Gurugram')
     coords = data['context'].get('coordinates')
     search_loc = f"{coords['lat']},{coords['lng']}" if coords else location
     
-    search_context = "No search performed."
+    search_context = "No external search results found."
     
-    # 2. TAVILY SEARCH
+    # TAVILY SEARCH
     try:
         query = ""
         if data.get('user_places'):
@@ -116,18 +105,22 @@ def plan_trip():
         
         if tavily:
             tavily_response = tavily.search(query=query, max_results=3)
-            search_context = json.dumps(tavily_response['results'])
+            # Check if results exist
+            if 'results' in tavily_response and len(tavily_response['results']) > 0:
+                search_context = json.dumps(tavily_response['results'])
+            else:
+                print("Tavily returned 0 results.")
             
     except Exception as e:
         print(f"Search Error: {e}")
 
-    # 3. GEMINI GENERATION
+    # GEMINI GENERATION
     try:
         full_prompt = f"{SYSTEM_PROMPT}\n\nUSER DATA: {json.dumps(data)}\nSEARCH RESULTS: {search_context}"
         
         json_response_string = ask_google_ai(full_prompt)
         
-        # Clean markdown
+        # Clean markdown if present
         clean_json = json_response_string.replace("```json", "").replace("```", "")
         
         return jsonify(json.loads(clean_json))
