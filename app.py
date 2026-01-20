@@ -17,41 +17,49 @@ tavily = None
 if TAVILY_API_KEY:
     tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
-def ask_google_ai(prompt):
-    # ------------------------------------------------------------------
-    # FIX: We use the 'v1' endpoint which is the most stable for all keys.
-    # We use 'gemini-pro' which is the standard text model.
-    # ------------------------------------------------------------------
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
-    headers = {'Content-Type': 'application/json'}
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
-    }
-    
-    response = requests.post(url, headers=headers, json=payload)
-    
-    if response.status_code != 200:
-        print(f"GOOGLE ERROR: {response.text}")
-        # Fallback: If v1 fails, try v1beta with 1.5-flash as a backup
-        return ask_google_ai_backup(prompt)
+# ---------------------------------------------------------
+# 1. AUTO-DISCOVERY FUNCTION (Solves the 404 Error)
+# ---------------------------------------------------------
+def get_live_model():
+    """
+    Asks Google which model is available for this Key.
+    """
+    try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
+        response = requests.get(url)
+        data = response.json()
         
-    return response.json()['candidates'][0]['content']['parts'][0]['text']
+        # Priority list of models we prefer
+        preferred = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"]
+        
+        available_models = []
+        if 'models' in data:
+            for m in data['models']:
+                # We only want models that can generate content
+                if 'generateContent' in m.get('supportedGenerationMethods', []):
+                    # Clean name "models/gemini-pro" -> "gemini-pro"
+                    clean_name = m['name'].replace("models/", "")
+                    available_models.append(clean_name)
+        
+        # Pick the best one
+        for p in preferred:
+            if p in available_models:
+                print(f"⚡ LOCKED ON MODEL: {p}")
+                return p
+        
+        # If none of our favorites are there, take the first available one
+        if available_models:
+            print(f"⚡ FALLBACK MODEL: {available_models[0]}")
+            return available_models[0]
+            
+    except Exception as e:
+        print(f"Model Discovery Failed: {e}")
+        
+    return "gemini-pro" # Last resort
 
-def ask_google_ai_backup(prompt):
-    print("⚠️ Trying Backup Model (Flash)...")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-    headers = {'Content-Type': 'application/json'}
-    payload = { "contents": [{ "parts": [{"text": prompt}] }] }
-    response = requests.post(url, headers=headers, json=payload)
-    if response.status_code != 200:
-        raise Exception(f"All Models Failed. Google Error: {response.text}")
-    return response.json()['candidates'][0]['content']['parts'][0]['text']
-
-# ------------------------------------------------------------------
-# PROMPT UPDATE: We force the AI to generate a plan even with no data.
-# ------------------------------------------------------------------
+# ---------------------------------------------------------
+# 2. CREATIVE PROMPT (Solves the "Cannot generate plan" Error)
+# ---------------------------------------------------------
 SYSTEM_PROMPT = """
 You are the "Dynamic Trip Companion".
 OBJECTIVE: Return a JSON plan based on user inputs.
@@ -59,7 +67,7 @@ OBJECTIVE: Return a JSON plan based on user inputs.
 RULES:
 1. Prioritize "User Places" (Bucket List) if provided.
 2. If "User Places" is empty, use "Search Results".
-3. **CRITICAL:** If Search Results are also empty, USE YOUR OWN KNOWLEDGE of the city to create a plan. DO NOT return an error message. Always return a valid JSON plan.
+3. **CRITICAL:** If Search Results are also empty, USE YOUR OWN KNOWLEDGE of the city to create a plan. **NEVER** return an error message. **ALWAYS** return a valid JSON plan.
 
 OUTPUT JSON FORMAT:
 {
@@ -87,13 +95,14 @@ def plan_trip():
     data = request.json
     print("Received Data:", data)
 
+    # Setup Location
     location = data['context'].get('location', 'Gurugram')
     coords = data['context'].get('coordinates')
     search_loc = f"{coords['lat']},{coords['lng']}" if coords else location
     
     search_context = "No external search results found."
     
-    # TAVILY SEARCH
+    # Tavily Search
     try:
         query = ""
         if data.get('user_places'):
@@ -105,23 +114,33 @@ def plan_trip():
         
         if tavily:
             tavily_response = tavily.search(query=query, max_results=3)
-            # Check if results exist
             if 'results' in tavily_response and len(tavily_response['results']) > 0:
                 search_context = json.dumps(tavily_response['results'])
-            else:
-                print("Tavily returned 0 results.")
             
     except Exception as e:
         print(f"Search Error: {e}")
 
-    # GEMINI GENERATION
+    # Gemini Generation
     try:
+        # 1. Find the model
+        model_name = get_live_model()
+        
+        # 2. Build the request
         full_prompt = f"{SYSTEM_PROMPT}\n\nUSER DATA: {json.dumps(data)}\nSEARCH RESULTS: {search_context}"
         
-        json_response_string = ask_google_ai(full_prompt)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+        headers = {'Content-Type': 'application/json'}
+        payload = { "contents": [{ "parts": [{"text": full_prompt}] }] }
         
-        # Clean markdown if present
-        clean_json = json_response_string.replace("```json", "").replace("```", "")
+        response = requests.post(url, headers=headers, json=payload)
+        
+        if response.status_code != 200:
+            print(f"GOOGLE ERROR: {response.text}")
+            raise Exception(f"Google Error: {response.text}")
+
+        # 3. Clean and Return
+        json_text = response.json()['candidates'][0]['content']['parts'][0]['text']
+        clean_json = json_text.replace("```json", "").replace("```", "")
         
         return jsonify(json.loads(clean_json))
         
