@@ -252,7 +252,7 @@ def ask_google(prompt, temperature=0.7):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": temperature,
-            "maxOutputTokens": 1500,  # Further reduced to prevent truncation
+            "maxOutputTokens": 2500,  # Increased to allow full itinerary
             "responseMimeType": "application/json"  # Force JSON output
         }
     }
