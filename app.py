@@ -17,37 +17,30 @@ tavily = None
 if TAVILY_API_KEY:
     tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
-# ---------------------------------------------------------
-# DIRECT GOOGLE API FUNCTION (No Library Required)
-# ---------------------------------------------------------
 def ask_google_ai(prompt):
-    # We hit the API URL directly. This never gets "outdated".
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    # SWITCHED TO GEMINI-PRO (The standard model that always works)
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
     headers = {'Content-Type': 'application/json'}
     payload = {
         "contents": [{
             "parts": [{"text": prompt}]
-        }],
-        "generationConfig": {
-            "response_mime_type": "application/json"
-        }
+        }]
     }
     
     response = requests.post(url, headers=headers, json=payload)
     
+    # If error, print the full Google message to logs so we can see it
     if response.status_code != 200:
-        raise Exception(f"Google API Error: {response.text}")
+        print(f"GOOGLE API ERROR DETAILS: {response.text}")
+        raise Exception(f"Google Error: {response.status_code}")
         
-    # extract the text from the JSON response
     return response.json()['candidates'][0]['content']['parts'][0]['text']
-# ---------------------------------------------------------
 
 SYSTEM_PROMPT = """
 You are the "Dynamic Trip Companion".
-OBJECTIVE: Return a JSON plan based on user inputs.
-- Prioritize "User Places" (Bucket List) if provided.
+OBJECTIVE: Return a JSON plan based on inputs.
+- Prioritize "User Places" (Bucket List).
 - If empty, use Search Results.
-- If 12AM-5AM, suggest safe places.
 
 OUTPUT JSON FORMAT:
 {
@@ -75,7 +68,7 @@ def plan_trip():
     data = request.json
     print("Received Data:", data)
 
-    # 1. SETUP SEARCH LOCATION
+    # 1. SETUP LOCATION
     location = data['context'].get('location', 'Gurugram')
     coords = data['context'].get('coordinates')
     search_loc = f"{coords['lat']},{coords['lng']}" if coords else location
@@ -99,14 +92,17 @@ def plan_trip():
     except Exception as e:
         print(f"Search Error: {e}")
 
-    # 3. GEMINI GENERATION (Direct Mode)
+    # 3. GEMINI GENERATION
     try:
         full_prompt = f"{SYSTEM_PROMPT}\n\nUSER DATA: {json.dumps(data)}\nSEARCH RESULTS: {search_context}"
         
-        # Call our custom function instead of the library
+        # Direct call
         json_response_string = ask_google_ai(full_prompt)
         
-        return jsonify(json.loads(json_response_string))
+        # Clean up code blocks if Google adds them
+        clean_json = json_response_string.replace("```json", "").replace("```", "")
+        
+        return jsonify(json.loads(clean_json))
         
     except Exception as e:
         print(f"AI Error: {e}")
