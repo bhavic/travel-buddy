@@ -1,5 +1,5 @@
 flask
 flask-cors
-google-generativeai
+google-generativeai>=0.8.0
 tavily-python
 gunicorn
