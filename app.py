@@ -1,6 +1,7 @@
 import os
 import json
 import requests
+import re
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from tavily import TavilyClient
@@ -16,90 +17,55 @@ tavily = None
 if TAVILY_API_KEY:
     tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
-# --- DYNAMIC DISCOVERY FUNCTION ---
+# --- 1. DYNAMIC MODEL DISCOVERY (Fixes 404 Errors) ---
 def get_working_model_url():
-    """
-    Asks Google for the list of available models and returns the URL for the best one.
-    """
+    """Asks Google which model is valid for this API Key."""
     list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
-    
     try:
-        print("🔎 Listing available Google Models...")
         response = requests.get(list_url)
         data = response.json()
-        
-        if 'error' in data:
-            raise Exception(f"Google List Error: {data['error']['message']}")
-            
-        # We want a model that supports 'generateContent'
-        # Preferred order: Flash -> Pro -> 1.0 -> Any
-        preferred_keywords = ["flash", "1.5-pro", "gemini-pro", "1.0"]
-        
         valid_models = []
         if 'models' in data:
             for m in data['models']:
                 if 'generateContent' in m.get('supportedGenerationMethods', []):
-                    valid_models.append(m['name']) # e.g. "models/gemini-1.5-flash"
+                    valid_models.append(m['name'])
         
+        # Fallback if list is empty
         if not valid_models:
-            raise Exception("No text-generation models found for this API Key.")
+            return f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
             
-        # Select the best one
-        selected_model = valid_models[0] # Default to first found
-        
-        for keyword in preferred_keywords:
-            for model_name in valid_models:
-                if keyword in model_name:
-                    selected_model = model_name
-                    break
-            else:
-                continue
-            break
-            
-        print(f"✅ Selected Model: {selected_model}")
-        
-        # Construct the generation URL
-        # selected_model already contains "models/...", so we don't add it again if not needed, 
-        # but the API usually expects: https://.../v1beta/models/gemini-pro:generateContent
-        # However, the 'name' field from list is "models/name". 
-        
-        # We clean it just to be safe and reconstruct standard URL
-        clean_name = selected_model.replace("models/", "")
+        # Select best available model (Prefer Flash or Pro)
+        selected = valid_models[0]
+        for m in valid_models:
+            if "flash" in m or "1.5" in m:
+                selected = m
+                break
+                
+        clean_name = selected.replace("models/", "")
         return f"https://generativelanguage.googleapis.com/v1beta/models/{clean_name}:generateContent?key={GEMINI_API_KEY}"
-
-    except Exception as e:
-        print(f"❌ Discovery Failed: {e}")
-        # Absolute fallback if list fails (rare)
+    except:
         return f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
 
 def ask_google(prompt):
-    # 1. Get the exact correct URL dynamically
     url = get_working_model_url()
-    
-    # 2. Send Request
-    payload = {
-        "contents": [{ "parts": [{"text": prompt}] }],
-        "generationConfig": { "temperature": 0.4 } 
-    }
+    # We use temperature 0.5 to allow some creativity if search fails
+    payload = { "contents": [{ "parts": [{"text": prompt}] }], "generationConfig": { "temperature": 0.5 } }
     
     response = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload)
-    
     if response.status_code == 200:
         return response.json()['candidates'][0]['content']['parts'][0]['text']
     else:
-        raise Exception(f"Google AI Error ({response.status_code}): {response.text}")
+        raise Exception(f"Google Error {response.status_code}: {response.text}")
 
-# --- STRICT PROMPT ---
+# --- 2. INTELLIGENT PROMPT (Fixes "Unable to Plan" Error) ---
 SYSTEM_PROMPT = """
-You are "TripBuddy", a strict local guide.
+You are "TripBuddy", a local expert guide.
 OBJECTIVE: Plan a specific itinerary.
 
 RULES:
-1. **SPECIFICITY IS MANDATORY:** You MUST name real, verifiable places.
-   - ❌ BAD: "Local Dhabha", "Nearby Cafe", "City Park"
-   - ✅ GOOD: "Gulshan Dhaba", "Roots Cafe", "Leisure Valley Park"
-2. **USE SEARCH DATA:** Use the provided search results to pick the best rated spots.
-3. **REALISTIC TIMING:** Account for travel time.
+1. **SPECIFICITY:** You must name real, verifiable places.
+2. **SEARCH DATA FIRST:** Prioritize the 'AVAILABLE PLACES' provided below.
+3. **FALLBACK MANDATORY:** If 'AVAILABLE PLACES' is empty, **YOU MUST USE YOUR OWN INTERNAL KNOWLEDGE** to suggest top-rated, real places. Do NOT return an error.
 4. **JSON ONLY:** Output pure JSON. No markdown.
 
 OUTPUT FORMAT:
@@ -123,7 +89,7 @@ OUTPUT FORMAT:
 
 @app.route('/', methods=['GET'])
 def health_check():
-    return "Travel Buddy V3.2 (Auto-Discovery) is Running!", 200
+    return "Travel Buddy Final Version is Running!", 200
 
 @app.route('/api/plan', methods=['POST'])
 def plan_trip():
@@ -131,46 +97,57 @@ def plan_trip():
         data = request.json
         print("Received Data:", data)
 
-        # 1. SETUP
+        # --- 3. SAFETY NET (Fixes Missing City Error) ---
         trip_type = data.get('plan_type', 'NOW')
-        location = data['context'].get('location', 'Gurugram')
-        dest = data['context'].get('destination', location)
-        if trip_type == 'TRIP' and (not dest or dest == location): 
-            dest = data['context'].get('user_notes', location)
+        loc_input = data['context'].get('location', '')
+        dest_input = data['context'].get('destination', '')
+        
+        # Default to Gurugram if user sends nothing
+        target_city = "Gurugram" 
+        
+        if trip_type == 'TRIP':
+            if dest_input and dest_input.strip(): target_city = dest_input
+            elif loc_input and loc_input.strip(): target_city = loc_input
+        else:
+            if loc_input and loc_input.strip(): target_city = loc_input
+            
+        print(f"🎯 Target City: {target_city}")
 
-        # 2. SEARCH (Get Specifics)
-        search_context = "No search data."
+        # --- 4. SEARCH & FALLBACK ---
+        search_context = ""
         if tavily:
             try:
-                q = f"Best rated restaurants and specific tourist attractions in {dest} with names and ratings"
+                q = f"Top rated tourist attractions and restaurants in {target_city} for {data.get('users', {}).get('vibe', 'general')} vibe"
                 print(f"🔎 Searching Tavily: {q}")
                 res = tavily.search(query=q, max_results=6)
-                search_context = json.dumps(res.get('results', []))
+                if res.get('results'):
+                    search_context = json.dumps(res['results'])
+                    print(f"✅ Found {len(res['results'])} results.")
+                else:
+                    print("⚠️ Tavily returned 0 results. Switching to Internal Knowledge.")
             except Exception as e:
-                print(f"Search Error: {e}")
+                print(f"❌ Search Error: {e}")
 
-        # 3. GENERATE
+        # --- 5. GENERATE ---
         full_prompt = f"""
         {SYSTEM_PROMPT}
         
         CONTEXT:
-        - Plan: {trip_type}
-        - City: {dest}
-        - Vibe: {json.dumps(data.get('users'))}
+        - Plan Type: {trip_type}
+        - Target City: {target_city}
+        - User Vibe: {json.dumps(data.get('users'))}
         
-        AVAILABLE PLACES (Pick from here):
-        {search_context}
+        AVAILABLE PLACES FROM SEARCH:
+        {search_context if search_context else "Search failed. Use your internal knowledge for " + target_city}
         """
         
         raw_response = ask_google(full_prompt)
-        
-        # 4. CLEAN JSON
         clean_json = raw_response.replace("```json", "").replace("```", "").strip()
         
-        # 5. VALIDATE
+        # --- 6. VALIDATION LOOP (Fixes "Local Eatery" Lazy Answers) ---
         if "Local Eatery" in clean_json or "Local Restaurant" in clean_json:
-            print("⚠️ Detected generic response. Retrying...")
-            full_prompt += "\n\nCRITICAL ERROR: You provided generic names. REWRITE with specific real names."
+            print("⚠️ Generic answer detected. Forcing retry...")
+            full_prompt += "\n\nERROR: You used generic names. REWRITE using SPECIFIC REAL PLACE NAMES."
             raw_response = ask_google(full_prompt)
             clean_json = raw_response.replace("```json", "").replace("```", "").strip()
 
