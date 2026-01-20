@@ -459,12 +459,12 @@ Create a {trip_type} itinerary for {target_city}.
 - If TOMORROW: Plan a FULL DAY starting from 9 AM morning (breakfast spots, morning activities, lunch, afternoon, dinner) - IGNORE the current time completely
 - If WEEKEND/TRIP: Plan a full vacation day starting from morning (9 AM)
 
-IMPORTANT: For TOMORROW, WEEKEND, and TRIP plans, always start the itinerary from morning (around 9 AM) regardless of what time it currently is. Create a complete day schedule:
-- Morning (9-12): Breakfast and morning activities
-- Lunch (12:30-14:00): Lunch spot
-- Afternoon (14:00-17:00): Afternoon activities  
-- Evening (17:00-20:00): Sunset/evening activities
-- Dinner (20:00-22:00): Dinner recommendations
+IMPORTANT: For TOMORROW, WEEKEND, and TRIP plans, always start the itinerary from morning around 9 AM regardless of what time it currently is. Create a complete day schedule:
+- Morning 9am to 12pm: Breakfast and morning activities
+- Lunch 12:30pm to 2pm: Lunch spot
+- Afternoon 2pm to 5pm: Afternoon activities  
+- Evening 5pm to 8pm: Sunset and evening activities
+- Dinner 8pm to 10pm: Dinner recommendations
 
 Remember to:
 1. Only suggest REAL places with specific names
@@ -643,3 +643,18 @@ Do not suggest places in the wrong city.
                     "narrative": "My travel planning brain had a brief moment. Hit 'Try Again' and I'll craft something amazing for you!",
                     "tags": ["Retry"],
                     "google_query": "popular attractions nearby"
+                }
+            ],
+            "closing": {
+                "reflection": "Every great journey has a few detours. Let's get back on track! 🚀"
+            }
+        }
+        return jsonify(emergency_response)
+
+
+# --- STARTUP ---
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    print(f"\n🚀 Travel Buddy Pro v2.0 starting on port {port}")
+    print("=" * 50)
+    app.run(host='0.0.0.0', port=port, debug=False)
