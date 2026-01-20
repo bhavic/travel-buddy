@@ -57,7 +57,7 @@ def plan_trip():
     location = data['context'].get('location', 'Gurugram')
     coords = data['context'].get('coordinates')
     
-    # FIXED: We define search_loc here
+    # Define search_loc
     search_loc = f"{coords['lat']},{coords['lng']}" if coords else location
     
     search_context = "No search performed."
@@ -68,7 +68,6 @@ def plan_trip():
         if data.get('user_places'):
             query = f"Details for {data['user_places']} in {location}"
         else:
-            # FIXED: We use search_loc here (it was 'search_location' before)
             query = f"Best places open now near {search_loc} for {data['users'][0]['energy']} vibe"
             
         print(f"Searching: {query}")
@@ -82,7 +81,9 @@ def plan_trip():
 
     # 3. GEMINI GENERATION
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=SYSTEM_PROMPT)
+        # FIXED: Switched to 'gemini-pro' which is universally available
+        model = genai.GenerativeModel('gemini-pro', system_instruction=SYSTEM_PROMPT)
+        
         user_prompt = f"USER DATA: {json.dumps(data)}\nSEARCH RESULTS: {search_context}"
         
         response = model.generate_content(user_prompt, generation_config={"response_mime_type": "application/json"})
