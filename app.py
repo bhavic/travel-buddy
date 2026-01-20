@@ -8,7 +8,7 @@ from tavily import TavilyClient
 app = Flask(__name__)
 CORS(app)
 
-# These will pull your keys from the secure hosting environment
+# Pull keys from Render Environment Variables
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 
@@ -53,9 +53,11 @@ def plan_trip():
     data = request.json
     print("Received Data:", data)
 
-    # 1. SETUP SEARCH
+    # 1. SETUP SEARCH LOCATION
     location = data['context'].get('location', 'Gurugram')
     coords = data['context'].get('coordinates')
+    
+    # FIXED: We define search_loc here
     search_loc = f"{coords['lat']},{coords['lng']}" if coords else location
     
     search_context = "No search performed."
@@ -66,12 +68,15 @@ def plan_trip():
         if data.get('user_places'):
             query = f"Details for {data['user_places']} in {location}"
         else:
-            query = f"Best places open now near {search_location} for {data['users'][0]['energy']} vibe"
+            # FIXED: We use search_loc here (it was 'search_location' before)
+            query = f"Best places open now near {search_loc} for {data['users'][0]['energy']} vibe"
             
         print(f"Searching: {query}")
+        
         if TAVILY_API_KEY:
             tavily_response = tavily.search(query=query, max_results=3)
             search_context = json.dumps(tavily_response['results'])
+            
     except Exception as e:
         print(f"Search Error: {e}")
 
@@ -82,7 +87,9 @@ def plan_trip():
         
         response = model.generate_content(user_prompt, generation_config={"response_mime_type": "application/json"})
         return jsonify(json.loads(response.text))
+        
     except Exception as e:
+        print(f"AI Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
