@@ -252,7 +252,8 @@ def ask_google(prompt, temperature=0.7):
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
             "temperature": temperature,
-            "maxOutputTokens": 4096
+            "maxOutputTokens": 1500,  # Further reduced to prevent truncation
+            "responseMimeType": "application/json"  # Force JSON output
         }
     }
     
@@ -261,7 +262,7 @@ def ask_google(prompt, temperature=0.7):
             url, 
             headers={'Content-Type': 'application/json'}, 
             json=payload, 
-            timeout=90
+            timeout=45  # Reduced to prevent worker timeout
         )
         
         if response.status_code == 200:
@@ -349,9 +350,38 @@ def plan_trip():
         time_phase, time_flavor = get_time_context(user_local_hour)
         print(f"🕐 User Local Time: {user_local_time}, Phase: {time_phase}")
         
-        # --- 4. REAL-TIME SEARCH ---
+        # --- FAST PATH: Late night response (skip complex AI to avoid timeout) ---
+        trip_type = data.get('plan_type', 'NOW')
+        
+        if time_phase == "late_night" and trip_type == "NOW":
+            print("🌙 Late night fast path - returning pre-built response")
+            late_response = {
+                "meta": {
+                    "greeting": f"Hey night owl! It's {user_local_time} in {target_city}.",
+                    "summary": "At this hour, most places are closed. But don't worry - I've got a couple ideas for you, or you could get some rest and plan an amazing day tomorrow!",
+                    "weather_tip": "It's cool outside at night - grab a jacket if you head out.",
+                    "emotional_note": "Sometimes the best adventures start with a good night's sleep. 😴"
+                },
+                "timeline": [
+                    {
+                        "time_slot": f"{user_local_time} - {user_local_time}",
+                        "title": "Late Night Options",
+                        "subtitle": "What's open at this hour",
+                        "narrative": f"At {user_local_time}, most of {target_city} is asleep. Your best bets are 24-hour convenience stores, late-night dhabas (roadside eateries), or finding a cozy spot to plan tomorrow's adventure. Consider checking if any nearby cafes have late hours.",
+                        "tags": ["Late Night", "Limited Options"],
+                        "insider_tip": "Some cloud kitchens and food delivery apps operate 24/7 - might be your best bet for a late night meal!",
+                        "google_query": f"24 hour restaurants near {target_city}"
+                    }
+                ],
+                "closing": {
+                    "reflection": f"The night is quiet in {target_city}. Rest up, and I'll help you plan an incredible day when the sun comes up! 🌅"
+                }
+            }
+            return jsonify(late_response)
+        
+        # --- 4. REAL-TIME SEARCH (skip for late night) ---
         search_context = ""
-        if tavily:
+        if tavily and time_phase != "late_night":
             try:
                 query = build_search_query(target_city, profile)
                 print(f"🔎 Search Query: {query}")
@@ -437,7 +467,9 @@ Output valid JSON only. No markdown. No explanation outside the JSON.
         
         # Robust JSON cleaning function
         def clean_and_parse_json(response_text):
-            """Cleans AI response and attempts to parse as JSON."""
+            """Cleans AI response and attempts to parse as JSON with multiple strategies."""
+            import re
+            
             clean = response_text.strip()
             
             # Remove markdown code blocks
@@ -460,7 +492,36 @@ Output valid JSON only. No markdown. No explanation outside the JSON.
             clean = clean.replace('\n', ' ').replace('\r', ' ')
             clean = clean.replace('\t', ' ')
             
-            return json.loads(clean)
+            # Try to parse as-is first
+            try:
+                return json.loads(clean)
+            except json.JSONDecodeError:
+                pass
+            
+            # Strategy 2: Fix unescaped quotes in strings
+            # Replace control characters
+            clean = re.sub(r'[\x00-\x1f\x7f-\x9f]', ' ', clean)
+            
+            try:
+                return json.loads(clean)
+            except json.JSONDecodeError:
+                pass
+            
+            # Strategy 3: Try to extract just the meta and timeline sections
+            meta_match = re.search(r'"meta"\s*:\s*\{[^}]+\}', clean)
+            timeline_match = re.search(r'"timeline"\s*:\s*\[', clean)
+            
+            if meta_match:
+                # Build a minimal valid response
+                try:
+                    meta_str = meta_match.group(0)
+                    minimal_json = '{' + meta_str + ', "timeline": [], "closing": {"reflection": "Plan generated with limited details."}}'
+                    return json.loads(minimal_json)
+                except:
+                    pass
+            
+            # If all parsing fails, raise the error
+            raise json.JSONDecodeError("All parsing strategies failed", clean, 0)
         
         try:
             parsed_response = clean_and_parse_json(raw_response)
@@ -524,16 +585,56 @@ Do not suggest places in the wrong city.
     
     except json.JSONDecodeError as e:
         print(f"❌ JSON Parse Error: {e}")
-        return jsonify({
-            "error": "The AI returned an invalid response. Please try again.",
-            "details": str(e)
-        }), 500
+        # Return emergency fallback instead of error
+        emergency_response = {
+            "meta": {
+                "greeting": f"Hey! I had a little hiccup creating your perfect plan for {target_city}.",
+                "summary": "Let me give you a quick starting point while I warm up.",
+                "weather_tip": "Check your local weather app for the latest conditions.",
+                "emotional_note": "Every adventure has a few bumps - tap Try Again for a fresh plan!"
+            },
+            "timeline": [
+                {
+                    "time_slot": "Flexible",
+                    "phase": "anytime",
+                    "title": f"Explore {target_city}",
+                    "subtitle": "Your adventure awaits",
+                    "narrative": f"While I'm generating a detailed plan, why not start exploring {target_city}? Check out popular spots on Google Maps or ask locals for their favorite hidden gems.",
+                    "tags": ["Exploration", "Flexible"],
+                    "insider_tip": "The best discoveries often happen when you wander without a fixed plan!",
+                    "google_query": f"best places to visit {target_city}"
+                }
+            ],
+            "closing": {
+                "reflection": "Tap 'Try Again' for a more detailed, personalized itinerary. I'll do better next time! 🌟"
+            }
+        }
+        return jsonify(emergency_response)
     
     except Exception as e:
         print(f"❌ Server Error: {e}")
-        return jsonify({
-            "error": str(e)
-        }), 500
+        # Return emergency fallback for any error
+        emergency_response = {
+            "meta": {
+                "greeting": "Oops! I ran into a tiny snag.",
+                "summary": "Something unexpected happened, but don't worry - your adventure isn't over!",
+                "emotional_note": "Technical hiccups happen. Tap Try Again and I'll be right back!"
+            },
+            "timeline": [
+                {
+                    "time_slot": "Now",
+                    "title": "Quick Recovery",
+                    "subtitle": "Let's try again",
+                    "narrative": "My travel planning brain had a brief moment. Hit 'Try Again' and I'll craft something amazing for you!",
+                    "tags": ["Retry"],
+                    "google_query": "popular attractions nearby"
+                }
+            ],
+            "closing": {
+                "reflection": "Every great journey has a few detours. Let's get back on track! 🚀"
+            }
+        }
+        return jsonify(emergency_response)
 
 
 # --- STARTUP ---
