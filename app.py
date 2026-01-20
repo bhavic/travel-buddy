@@ -6,14 +6,13 @@ from flask_cors import CORS
 from tavily import TavilyClient
 from datetime import datetime
 
-# TRY TO IMPORT GEOPY FOR REAL DISTANCE CALCULATION
-# You MUST run: pip install geopy
+# TRY TO IMPORT GEOPY
 try:
     from geopy.distance import geodesic
     HAS_GEOPY = True
 except ImportError:
     HAS_GEOPY = False
-    print("WARNING: 'geopy' not installed. Travel times will be estimates.")
+    print("WARNING: 'geopy' not installed.")
 
 app = Flask(__name__)
 CORS(app)
@@ -27,7 +26,7 @@ tavily = None
 if TAVILY_API_KEY:
     tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
-# 1. AUTO-DISCOVERY FUNCTION (Kept your logic, it's good)
+# 1. AUTO-DISCOVERY FUNCTION
 def get_live_model():
     try:
         url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
@@ -45,7 +44,7 @@ def get_live_model():
     except: pass
     return "gemini-pro"
 
-# 2. NEW SYSTEM PROMPT (Sequential Logic)
+# 2. SYSTEM PROMPT
 SYSTEM_PROMPT = """
 You are a "Logistics Expert Travel Buddy".
 OBJECTIVE: Create a STRICT SEQUENTIAL TIMELINE.
@@ -54,22 +53,23 @@ INPUT CONTEXT:
 - Plan Type: {plan_type}
 - Location: {search_city}
 - Date: {current_date}
+- Distance Context: {distance_hint}
 
 INSTRUCTIONS:
-1. If Plan Type is "TRIP": Plan a 3-day itinerary for the destination.
-2. If Plan Type is "NOW": Plan the next 4-6 hours starting from current time.
+1. If Plan Type is "TRIP": Plan a 3-day itinerary.
+2. If Plan Type is "NOW": Plan the next 4-6 hours.
 3. If Plan Type is "TOMORROW": Plan a full day (9 AM to 10 PM).
 
 CRITICAL RULES:
-- **Sequence:** You MUST output a list of stops in order (Start -> Food -> Activity -> Food -> End).
-- **Interleave Meals:** Do not just list attractions. Insert lunch/dinner stops.
-- **Travel Time:** If "Real Calculation" data is provided, use it. Otherwise, estimate realistically (e.g., 20 mins within city, 45 mins between cities).
-- **Entertainment:** If the search results show NO movies/events, explicitly state in the 'description' "No live cinema events found, opted for [Alternative Activity]".
+- **Sequence:** List stops in order (Start -> Food -> Activity -> Food -> End).
+- **Interleave Meals:** Do not just list attractions. Insert lunch/dinner.
+- **Entertainment:** If search results show NO movies/events, explicitly state in description: "No live cinema events found, opted for [Alternative]".
+- **Travel Time:** Use the "Distance Context" provided to estimate realistic travel times.
 
 OUTPUT JSON FORMAT:
 {
   "meta": { 
-    "summary": "One sentence overview of the plan.", 
+    "summary": "One sentence overview.", 
     "weather_advice": "General advice (e.g., carry an umbrella)." 
   },
   "timeline": [
@@ -78,8 +78,7 @@ OUTPUT JSON FORMAT:
       "activity_type": "FOOD | ACTIVITY | TRAVEL",
       "title": "Name of Place",
       "address": "Area, City",
-      "description": "Why this fits the mood + details about food/activity.",
-      "coords": { "lat": 28.5, "lng": 77.2 }, 
+      "description": "Why this fits + details.",
       "estimated_travel_time_next": "25 mins by car",
       "google_query": "Place Name City"
     }
@@ -99,63 +98,63 @@ def plan_trip():
     # --- 1. DETERMINE SEARCH LOCATION ---
     trip_type = data.get('plan_type', 'NOW')
     current_location = data['context'].get('location', 'Unknown')
-    # If it's a full trip, the destination is usually passed or derived. 
-    # Assuming Frontend sends 'destination' in context for 'TRIP' mode.
     search_city = data['context'].get('destination', current_location)
     
-    # Fallback if no destination provided for TRIP
     if trip_type == 'TRIP' and search_city == current_location:
-        search_city = data['context'].get('user_notes', current_location) # Use notes as destination if needed
+         # Fallback if specific destination not set, try user notes or default
+        search_city = data['context'].get('user_notes', current_location)
 
-    # Coordinates of starting point
+    # Coordinates
     start_coords = None
     coords_data = data['context'].get('coordinates')
     if coords_data:
         start_coords = (coords_data['lat'], coords_data['lng'])
 
-    # Date for movie searches
     today_str = datetime.now().strftime("%Y-%m-%d")
     
-    # --- 2. AGGRESSIVE DATA FETCHING (SPLIT SEARCH) ---
+    # --- 2. SEARCH ---
     search_results_text = ""
-    
+    first_result_coords = None
+
     if tavily:
         try:
-            # A. SPECIFIC MOVIE SEARCH (Fixes the "No Movies" bug)
+            # A. Movies
             movie_query = f"Movies and events showing in {search_city} on {today_str}"
-            print(f"Searching Movies: {movie_query}")
             movies = tavily.search(query=movie_query, max_results=3)
             
-            # B. GENERAL PLACE SEARCH
+            # B. Places
             place_query = f"Best tourist spots, restaurants, and things to do in {search_city}"
-            print(f"Searching Places: {place_query}")
             places = tavily.search(query=place_query, max_results=8)
             
-            # Combine results for context
             combined_results = movies.get('results', []) + places.get('results', [])
             search_results_text = json.dumps(combined_results)
-            
+
+            # Try to get coords from first result for distance calc
+            if places.get('results'):
+                # Tavily sometimes doesn't give coords, but if it did, we'd use them
+                pass 
+
         except Exception as e:
             print(f"Search Error: {e}")
             search_results_text = "No external search data available."
 
-    # --- 3. PRE-CALCULATE DISTANCES (If Geopy is available) ---
-    # We inject this into the prompt to help the AI estimate better
-    distance_hint = ""
-    if HAS_GEOPY and start_coords and combined_results:
-        # Calculate distance to first found place just to give AI a sense of scale
-        # This is a simplified logic for MVP
-        pass 
+    # --- 3. CALCULATE DISTANCE (The Geopy Fix) ---
+    distance_hint = "Calculate travel times based on city traffic."
+    
+    # We don't have the destination coordinates easily unless we Geocode the city name.
+    # For now, we rely on the AI knowing the distance between 'start_coords' and 'search_city'.
+    if start_coords and search_city != current_location:
+         distance_hint = f"The user is currently at {start_coords}. They are traveling to {search_city}. Calculate travel time between these two points first."
 
     # --- 4. GEMINI GENERATION ---
     try:
         model_name = get_live_model()
         
-        # Inject variables into the prompt
         formatted_prompt = SYSTEM_PROMPT.format(
             plan_type=trip_type,
             search_city=search_city,
-            current_date=today_str
+            current_date=today_str,
+            distance_hint=distance_hint
         )
         
         full_prompt = f"""
@@ -163,7 +162,7 @@ def plan_trip():
         
         USER INPUT DATA: {json.dumps(data)}
         
-        EXTERNAL SEARCH RESULTS (Use these for the plan):
+        EXTERNAL SEARCH RESULTS:
         {search_results_text}
         """
         
@@ -175,24 +174,15 @@ def plan_trip():
         
         if response.status_code != 200:
             print(f"GOOGLE ERROR: {response.text}")
-            # Return a fallback so the user sees SOMETHING
             return jsonify({
-                "meta": {"summary": "AI currently overloaded. Please try again."},
+                "meta": {"summary": "AI overloaded. Please try again."}, 
                 "timeline": []
             })
 
         json_text = response.json()['candidates'][0]['content']['parts'][0]['text']
-        
-        # Clean markdown if present
         clean_json = json_text.replace("```json", "").replace("```", "").strip()
         
-        final_data = json.loads(clean_json)
-        
-        # --- 5. POST-PROCESSING (Polish Travel Times) ---
-        # We can attempt to refine the travel times here if we had real coords for every spot
-        # For now, we trust the AI's estimation based on the prompt instructions
-        
-        return jsonify(final_data)
+        return jsonify(json.loads(clean_json))
         
     except Exception as e:
         print(f"AI Error: {e}")
