@@ -435,18 +435,70 @@ Output valid JSON only. No markdown. No explanation outside the JSON.
         print("🤖 Generating itinerary...")
         raw_response = ask_google(full_prompt)
         
-        # Clean the response
-        clean_json = raw_response.strip()
-        if clean_json.startswith("```json"):
-            clean_json = clean_json[7:]
-        if clean_json.startswith("```"):
-            clean_json = clean_json[3:]
-        if clean_json.endswith("```"):
-            clean_json = clean_json[:-3]
-        clean_json = clean_json.strip()
+        # Robust JSON cleaning function
+        def clean_and_parse_json(response_text):
+            """Cleans AI response and attempts to parse as JSON."""
+            clean = response_text.strip()
+            
+            # Remove markdown code blocks
+            if clean.startswith("```json"):
+                clean = clean[7:]
+            elif clean.startswith("```"):
+                clean = clean[3:]
+            if clean.endswith("```"):
+                clean = clean[:-3]
+            clean = clean.strip()
+            
+            # Try to find JSON object boundaries
+            start_idx = clean.find('{')
+            end_idx = clean.rfind('}')
+            
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                clean = clean[start_idx:end_idx + 1]
+            
+            # Fix common JSON issues
+            clean = clean.replace('\n', ' ').replace('\r', ' ')
+            clean = clean.replace('\t', ' ')
+            
+            return json.loads(clean)
         
-        # Parse JSON
-        parsed_response = json.loads(clean_json)
+        try:
+            parsed_response = clean_and_parse_json(raw_response)
+        except json.JSONDecodeError as parse_error:
+            print(f"⚠️ First JSON parse failed: {parse_error}")
+            print("🔄 Retrying with simpler prompt...")
+            
+            # Retry with a simpler, more constrained prompt
+            retry_prompt = f"""
+You must respond with ONLY valid JSON. No text before or after.
+
+Create a simple late-night itinerary for {target_city}.
+
+respond with this exact structure (fill in the values):
+{{
+  "meta": {{
+    "greeting": "It's late! Here's what's still open...",
+    "summary": "A brief late-night plan or acknowledgment that most places are closed."
+  }},
+  "timeline": [
+    {{
+      "time_slot": "02:30 - 03:30",
+      "title": "Name of a 24-hour place or suggestion to rest",
+      "subtitle": "Brief description",
+      "narrative": "Why this is appropriate for late night",
+      "tags": ["Late Night", "24 Hours"],
+      "google_query": "place name {target_city}"
+    }}
+  ],
+  "closing": {{
+    "reflection": "A warm closing thought about late night adventures or getting rest"
+  }}
+}}
+
+Output ONLY the JSON. No explanation.
+"""
+            raw_response = ask_google(retry_prompt, temperature=0.3)
+            parsed_response = clean_and_parse_json(raw_response)
         
         # --- 7. VALIDATE OUTPUT (pass time_phase for late-night leniency) ---
         issues = validate_itinerary(parsed_response, target_city, time_phase)
@@ -465,8 +517,7 @@ Do not suggest places in the wrong city.
 {full_prompt}
 """
             raw_response = ask_google(fix_prompt)
-            clean_json = raw_response.replace("```json", "").replace("```", "").strip()
-            parsed_response = json.loads(clean_json)
+            parsed_response = clean_and_parse_json(raw_response)
         
         print("✅ Itinerary generated successfully!")
         return jsonify(parsed_response)
