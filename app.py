@@ -1,3 +1,8 @@
+"""
+Travel Buddy Pro - Backend with Emotional Intelligence
+A human-centered travel planning API that understands traveler psychology.
+"""
+
 import os
 import json
 import requests
@@ -139,25 +144,30 @@ Create a **narrative itinerary** that feels like a story, not a spreadsheet.
 """
 
 # --- HELPER FUNCTIONS ---
-def get_time_context():
-    """Returns current time context for planning."""
-    now = datetime.now()
-    hour = now.hour
-    
-    if hour < 6:
-        return "late_night", "The city sleeps, but some gems await the nocturnal explorer..."
-    elif hour < 10:
-        return "early_morning", "The fresh morning offers perfect conditions for..."
-    elif hour < 12:
-        return "late_morning", "The city is waking up, ideal time for..."
-    elif hour < 14:
-        return "lunch_time", "Hunger calls, and the city has answers..."
-    elif hour < 17:
-        return "afternoon", "The afternoon sun invites exploration..."
-    elif hour < 20:
-        return "evening", "Golden hour magic awaits..."
+def get_time_context(user_hour=None):
+    """Returns time context based on user's local time."""
+    # Use user's local hour if provided, otherwise use server time
+    if user_hour is not None:
+        hour = int(user_hour)
     else:
+        hour = datetime.now().hour
+    
+    if hour >= 0 and hour < 5:
+        return "late_night", "It's the quiet hours. Most places are closed, but a few gems stay open for night owls. Consider planning for tomorrow morning instead, or I can find late-night spots."
+    elif hour >= 5 and hour < 8:
+        return "early_morning", "The city is just waking up. Perfect for peaceful starts and early cafes..."
+    elif hour >= 8 and hour < 11:
+        return "morning", "Morning energy is perfect for exploration before the crowds arrive..."
+    elif hour >= 11 and hour < 14:
+        return "lunch_time", "Hunger calls, and the city has amazing lunch options..."
+    elif hour >= 14 and hour < 17:
+        return "afternoon", "The afternoon invites exploration and discovery..."
+    elif hour >= 17 and hour < 20:
+        return "evening", "Golden hour magic awaits as the city transitions to night..."
+    elif hour >= 20 and hour < 23:
         return "night", "The city transforms under the night sky..."
+    else:
+        return "late_night", "It's getting late. Most spots are winding down, but some night gems await..."
 
 
 def build_search_query(city, traveler_profile):
@@ -326,9 +336,11 @@ def plan_trip():
         
         print(f"👤 Traveler Profile: {json.dumps(profile, indent=2)}")
         
-        # --- 3. GET TIME CONTEXT ---
-        time_phase, time_flavor = get_time_context()
-        print(f"🕐 Time Context: {time_phase}")
+        # --- 3. GET TIME CONTEXT (using user's local time) ---
+        user_local_hour = data.get('context', {}).get('local_hour')
+        user_local_time = data.get('context', {}).get('local_time', '')
+        time_phase, time_flavor = get_time_context(user_local_hour)
+        print(f"🕐 User Local Time: {user_local_time}, Phase: {time_phase}")
         
         # --- 4. REAL-TIME SEARCH ---
         search_context = ""
@@ -355,6 +367,18 @@ def plan_trip():
         if profile['personal_note']:
             personal_context = f"PERSONAL CONTEXT: {profile['personal_note']}"
         
+        # Late night specific instructions
+        late_night_instruction = ""
+        if time_phase == "late_night":
+            late_night_instruction = """
+**LATE NIGHT SPECIAL HANDLING**:
+It's currently past midnight. Most places are CLOSED. You have two options:
+1. If plan_type is "NOW": ONLY suggest places that are actually open 24 hours or late night (late-night diners, 24h cafes, night markets, after-hours lounges). If nothing is open, acknowledge this and suggest the user rest and plan for tomorrow morning.
+2. If plan_type is "TOMORROW": Plan a normal day starting from morning, NOT from late night.
+
+Be honest - don't suggest cafes or restaurants that would be closed at 2-4 AM unless they are specifically known to be open.
+"""
+
         full_prompt = f"""
 {SYSTEM_PROMPT}
 
@@ -363,7 +387,9 @@ def plan_trip():
 
 **Location**: {target_city}
 **Plan Type**: {trip_type}
+**User's Current Local Time**: {user_local_time}
 **Current Time Phase**: {time_phase} - {time_flavor}
+{late_night_instruction}
 
 **Traveler Profile**:
 - Group: {profile['group']}
@@ -382,9 +408,10 @@ def plan_trip():
 ## INSTRUCTIONS FOR THIS PLAN
 
 Create a {trip_type} itinerary for {target_city}.
+- If NOW and it's late_night (after midnight): ONLY suggest 24-hour or late-night spots, or honestly tell them most places are closed
 - If NOW: Plan for the next 4-6 hours starting from {time_phase}
-- If TOMORROW: Plan a full day (morning to night)
-- If TRIP: Plan a full vacation day
+- If TOMORROW: Plan a full day starting from morning (ignore current late hour)
+- If WEEKEND/TRIP: Plan a full vacation day starting from morning
 
 Remember to:
 1. Only suggest REAL places with specific names
@@ -392,6 +419,7 @@ Remember to:
 3. Write in your warm, narrative style
 4. Include practical transition details
 5. Respect their constraints absolutely
+6. BE TIME-AWARE: Don't suggest morning cafes at 2 AM, don't suggest closed restaurants
 
 Output valid JSON only. No markdown. No explanation outside the JSON.
 """
