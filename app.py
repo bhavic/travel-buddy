@@ -1,30 +1,53 @@
 import os
 import json
+import requests
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-import google.generativeai as genai
 from tavily import TavilyClient
 
 app = Flask(__name__)
 CORS(app)
 
+# KEYS
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 
-if GEMINI_API_KEY:
-    genai.configure(api_key=GEMINI_API_KEY)
-
+# SETUP TAVILY
+tavily = None
 if TAVILY_API_KEY:
     tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
-SYSTEM_PROMPT = """
-You are the "Dynamic Trip Companion" for Bhavic and Bhaavya.
-INPUTS: User profiles, Location, Mode (Solo/Duo), Plan Type, and "Bucket List".
+# ---------------------------------------------------------
+# DIRECT GOOGLE API FUNCTION (No Library Required)
+# ---------------------------------------------------------
+def ask_google_ai(prompt):
+    # We hit the API URL directly. This never gets "outdated".
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    headers = {'Content-Type': 'application/json'}
+    payload = {
+        "contents": [{
+            "parts": [{"text": prompt}]
+        }],
+        "generationConfig": {
+            "response_mime_type": "application/json"
+        }
+    }
+    
+    response = requests.post(url, headers=headers, json=payload)
+    
+    if response.status_code != 200:
+        raise Exception(f"Google API Error: {response.text}")
+        
+    # extract the text from the JSON response
+    return response.json()['candidates'][0]['content']['parts'][0]['text']
+# ---------------------------------------------------------
 
-OBJECTIVE: Return a JSON plan.
-- If "Bucket List" exists, prioritize those places.
-- If "Bucket List" is empty, use Search Results to find spots matching the Vibe.
-- If 12AM-5AM, suggest only safe/24hr places.
+SYSTEM_PROMPT = """
+You are the "Dynamic Trip Companion".
+OBJECTIVE: Return a JSON plan based on user inputs.
+- Prioritize "User Places" (Bucket List) if provided.
+- If empty, use Search Results.
+- If 12AM-5AM, suggest safe places.
 
 OUTPUT JSON FORMAT:
 {
@@ -69,22 +92,21 @@ def plan_trip():
             
         print(f"Searching: {query}")
         
-        if TAVILY_API_KEY:
+        if tavily:
             tavily_response = tavily.search(query=query, max_results=3)
             search_context = json.dumps(tavily_response['results'])
             
     except Exception as e:
         print(f"Search Error: {e}")
 
-    # 3. GEMINI GENERATION
+    # 3. GEMINI GENERATION (Direct Mode)
     try:
-        # We use the specific 1.5-flash model which is the current stable free one
-        model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=SYSTEM_PROMPT)
+        full_prompt = f"{SYSTEM_PROMPT}\n\nUSER DATA: {json.dumps(data)}\nSEARCH RESULTS: {search_context}"
         
-        user_prompt = f"USER DATA: {json.dumps(data)}\nSEARCH RESULTS: {search_context}"
+        # Call our custom function instead of the library
+        json_response_string = ask_google_ai(full_prompt)
         
-        response = model.generate_content(user_prompt, generation_config={"response_mime_type": "application/json"})
-        return jsonify(json.loads(response.text))
+        return jsonify(json.loads(json_response_string))
         
     except Exception as e:
         print(f"AI Error: {e}")
