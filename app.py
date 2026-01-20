@@ -1,38 +1,41 @@
 import os
 import json
 import requests
+from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from tavily import TavilyClient
 
-# --- 1. GEOPY SETUP (Finds the City) ---
+# --- GEOPY SETUP ---
 try:
     from geopy.geocoders import Nominatim
-    geolocator = Nominatim(user_agent="travel_buddy_app")
+    geolocator = Nominatim(user_agent="travel_buddy_pro_v2")
     HAS_GEOPY = True
-    print("*** GEOPY IS ACTIVE ***")
+    print("✅ Geopy Active - Location intelligence enabled")
 except ImportError:
     HAS_GEOPY = False
-    print("WARNING: geopy not installed.")
+    print("⚠️ Geopy not installed - Using text locations only")
 
 app = Flask(__name__)
 CORS(app)
 
+# --- CONFIGURATION ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 
 tavily = None
 if TAVILY_API_KEY:
     tavily = TavilyClient(api_key=TAVILY_API_KEY)
+    print("✅ Tavily Active - Real-time search enabled")
 
-# --- 2. DYNAMIC MODEL DISCOVERY (Fixes "AI Unreachable") ---
+# --- DYNAMIC MODEL DISCOVERY ---
 def get_working_model_url():
-    """Asks Google for a list of models and picks the best valid one."""
-    print("🔎 Asking Google for available models...")
+    """Asks Google for available models and selects the best one."""
+    print("🔎 Discovering available AI models...")
     list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
     
     try:
-        response = requests.get(list_url)
+        response = requests.get(list_url, timeout=10)
         data = response.json()
         
         valid_models = []
@@ -42,149 +45,414 @@ def get_working_model_url():
                     valid_models.append(m['name'])
         
         if not valid_models:
-            print("⚠️ No models found in list. Trying fallback.")
+            print("⚠️ No models found. Using fallback.")
             return f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
-            
-        # Pick the best one (Flash > Pro > Standard)
+        
+        # Prefer flash models for speed
         selected = valid_models[0]
         for m in valid_models:
-            if "flash" in m or "1.5" in m:
+            if "flash" in m.lower() or "1.5" in m:
                 selected = m
                 break
-                
+        
         clean_name = selected.replace("models/", "")
         print(f"✅ Selected Model: {clean_name}")
         return f"https://generativelanguage.googleapis.com/v1beta/models/{clean_name}:generateContent?key={GEMINI_API_KEY}"
-
+    
     except Exception as e:
-        print(f"⚠️ Discovery Error: {e}. Using fallback.")
+        print(f"⚠️ Discovery failed: {e}")
         return f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
 
-def ask_google(prompt):
-    # 1. Get the correct URL dynamically
-    url = get_working_model_url()
-    
-    # 2. Send Request
-    payload = { "contents": [{ "parts": [{"text": prompt}] }], "generationConfig": { "temperature": 0.5 } }
-    
-    # We allow 60s timeout so Render doesn't kill it easily
-    response = requests.post(url, headers={'Content-Type': 'application/json'}, json=payload, timeout=60)
-    
-    if response.status_code == 200:
-        return response.json()['candidates'][0]['content']['parts'][0]['text']
-    else:
-        # Print the EXACT error from Google to the logs
-        print(f"❌ Google API Error: {response.text}")
-        raise Exception(f"Google Error {response.status_code}: {response.text}")
 
-# --- 3. SYSTEM PROMPT ---
+# --- ENHANCED SYSTEM PROMPT ---
 SYSTEM_PROMPT = """
-You are "TripBuddy", a local expert.
-OBJECTIVE: Plan a specific itinerary.
+You are "TripBuddy" — a warm, knowledgeable travel companion who genuinely cares about creating meaningful experiences.
 
-RULES:
-1. **SPECIFICITY:** Name real, verifiable places.
-2. **FALLBACK:** If search data is empty, USE YOUR INTERNAL KNOWLEDGE.
-3. **JSON ONLY:** Output pure JSON.
+## YOUR PERSONALITY
+- You speak like a well-traveled friend, not a booking engine
+- You understand that travel is emotional — people seek escape, connection, celebration, or discovery
+- You notice small details that make experiences special (best table for sunset views, the barista who remembers your name)
+- You balance practicality with wonder
 
-OUTPUT FORMAT:
+## TRAVELER CONTEXT YOU'LL RECEIVE
+- **Group**: solo / couple / friends / family / group (adjust intimacy and logistics)
+- **Occasion**: celebration / escape / exploration / romance / worktrip (set the emotional tone)
+- **Pace**: packed / balanced / slow (determines activity density)
+- **Food Style**: street / casual / fine (influences restaurant choices)
+- **Crowd Preference**: hidden / mixed / popular (off-beaten vs tourist spots)
+- **Constraints**: mobility / dietary / budget / time (hard requirements to respect)
+- **Personal Note**: Any special context the traveler shared
+
+## YOUR TASK
+Create a **narrative itinerary** that feels like a story, not a spreadsheet.
+
+## WRITING STYLE
+- Start each stop with emotional context: "As the morning light filters through..." or "When your energy needs a recharge..."
+- Explain WHY a place fits their vibe, not just WHAT it is
+- Include sensory details: sounds, smells, textures
+- Transition between stops naturally: "A 10-minute walk through the old quarter brings you to..."
+- For couples: romantic angles. For families: kid-friendly logistics. For solo: introspection moments.
+
+## RULES
+1. **REAL PLACES ONLY**: Name specific, verifiable establishments. Never say "Local Cafe" or "Nearby Restaurant"
+2. **RESPECT CONSTRAINTS**: If they said "no long walks," keep distances short. If vegetarian, only suggest veg-friendly spots.
+3. **MEAL TIMING**: Lunch around 12:30-14:00, Dinner around 19:00-21:00. Don't schedule activities during natural meal times without food.
+4. **PACING**:
+   - Packed: 6-8 activities, minimal downtime
+   - Balanced: 4-5 activities with breathing room
+   - Slow: 2-3 main experiences, lots of lingering time
+5. **WEATHER/TIME AWARE**: Morning = outdoor activities before heat. Evening = sunset spots, nightlife.
+6. **FALLBACK**: If search results are empty, use your internal knowledge of the city. Never say "I don't have information."
+
+## OUTPUT FORMAT (Strict JSON)
 {
-  "meta": { "summary": "Vibe check summary.", "weather_advice": "Wear sunscreen." },
+  "meta": {
+    "greeting": "A warm, personalized opening acknowledging their trip context",
+    "summary": "2-3 sentence narrative overview of the day's arc",
+    "weather_tip": "Contextual advice if relevant",
+    "emotional_note": "A thoughtful observation about their journey"
+  },
   "timeline": [
     {
-      "time_slot": "10:00 - 11:30",
-      "activity_type": "ACTIVITY",
+      "time_slot": "09:00 - 10:30",
+      "phase": "morning_energy",
       "title": "Specific Place Name",
-      "address": "Area, City",
-      "description": "Why it's good. Rating: 4.5/5",
-      "tags": ["Cafe", "Outdoor", "$$"],
-      "open_status": "Open until 11 PM",
-      "estimated_travel_time_next": "20 mins",
-      "google_query": "Specific Place Name City"
+      "subtitle": "Short atmospheric description",
+      "neighborhood": "Area/District Name",
+      "narrative": "2-3 sentences telling the story of this stop. Why it matters. What they'll feel.",
+      "insider_tip": "One specific tip only a local would know",
+      "tags": ["Cafe", "Instagrammable", "Quiet"],
+      "vibe_match": "Why this matches their stated preferences",
+      "price_indicator": "$$",
+      "open_status": "Open until 10 PM",
+      "duration": "1.5 hours",
+      "transition": "How to get to the next spot (walking, uber, etc) and what they'll see on the way",
+      "google_query": "Specific Place Name City",
+      "backup_option": "Alternative if this place is full/closed"
     }
-  ]
+  ],
+  "closing": {
+    "reflection": "End the day's narrative arc with a warm thought",
+    "next_day_teaser": "If multi-day, hint at what's coming"
+  }
 }
 """
 
+# --- HELPER FUNCTIONS ---
+def get_time_context():
+    """Returns current time context for planning."""
+    now = datetime.now()
+    hour = now.hour
+    
+    if hour < 6:
+        return "late_night", "The city sleeps, but some gems await the nocturnal explorer..."
+    elif hour < 10:
+        return "early_morning", "The fresh morning offers perfect conditions for..."
+    elif hour < 12:
+        return "late_morning", "The city is waking up, ideal time for..."
+    elif hour < 14:
+        return "lunch_time", "Hunger calls, and the city has answers..."
+    elif hour < 17:
+        return "afternoon", "The afternoon sun invites exploration..."
+    elif hour < 20:
+        return "evening", "Golden hour magic awaits..."
+    else:
+        return "night", "The city transforms under the night sky..."
+
+
+def build_search_query(city, traveler_profile):
+    """Builds a rich search query based on traveler profile."""
+    group = traveler_profile.get('group', 'travelers')
+    occasion = traveler_profile.get('occasion', 'exploration')
+    vibe = traveler_profile.get('energy', 'balanced')
+    food = traveler_profile.get('food_style', 'casual')
+    crowd = traveler_profile.get('crowd_pref', 'mixed')
+    
+    # Build contextual query
+    query_parts = [f"best places in {city}"]
+    
+    if group == 'couple':
+        query_parts.append("romantic")
+    elif group == 'family':
+        query_parts.append("family friendly kids")
+    elif group == 'friends':
+        query_parts.append("fun groups")
+    elif group == 'solo':
+        query_parts.append("solo traveler")
+    
+    if occasion == 'celebration':
+        query_parts.append("special occasion celebration")
+    elif occasion == 'escape':
+        query_parts.append("peaceful relaxing")
+    elif occasion == 'romance':
+        query_parts.append("romantic date intimate")
+    
+    if crowd == 'hidden':
+        query_parts.append("hidden gems off beaten path local favorites")
+    elif crowd == 'popular':
+        query_parts.append("must visit top rated popular")
+    
+    if food == 'fine':
+        query_parts.append("fine dining upscale restaurants")
+    elif food == 'street':
+        query_parts.append("street food local eateries")
+    
+    return " ".join(query_parts)
+
+
+def resolve_location(data):
+    """Resolves location from coordinates or text input."""
+    trip_type = data.get('plan_type', 'NOW')
+    loc_input = data.get('context', {}).get('location', '')
+    dest_input = data.get('context', {}).get('destination', '')
+    coords = data.get('context', {}).get('coordinates')
+    
+    # For full trips, use destination
+    if trip_type == 'TRIP' and dest_input and len(dest_input) > 2:
+        if 'found' not in dest_input.lower() and 'location' not in dest_input.lower():
+            return dest_input.strip()
+    
+    # Try geocoding coordinates
+    if coords and HAS_GEOPY:
+        try:
+            print(f"📍 Geocoding: {coords['lat']}, {coords['lng']}")
+            location = geolocator.reverse(f"{coords['lat']}, {coords['lng']}", language='en', timeout=10)
+            if location:
+                address = location.raw.get('address', {})
+                city = address.get('city') or address.get('town') or address.get('suburb') or address.get('state')
+                if city:
+                    print(f"✅ Resolved to: {city}")
+                    return city
+        except Exception as e:
+            print(f"⚠️ Geocoding failed: {e}")
+    
+    # Use text input if valid
+    if loc_input and 'found' not in loc_input.lower() and 'location' not in loc_input.lower():
+        return loc_input.strip()
+    
+    # Ultimate fallback
+    return "Gurugram"
+
+
+def ask_google(prompt, temperature=0.7):
+    """Sends prompt to Google AI with retry logic."""
+    url = get_working_model_url()
+    
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": 4096
+        }
+    }
+    
+    try:
+        response = requests.post(
+            url, 
+            headers={'Content-Type': 'application/json'}, 
+            json=payload, 
+            timeout=90
+        )
+        
+        if response.status_code == 200:
+            return response.json()['candidates'][0]['content']['parts'][0]['text']
+        else:
+            print(f"❌ Google API Error: {response.status_code} - {response.text}")
+            raise Exception(f"AI service error: {response.status_code}")
+    
+    except requests.exceptions.Timeout:
+        raise Exception("AI took too long to respond. Please try again.")
+    except Exception as e:
+        raise Exception(f"AI connection failed: {str(e)}")
+
+
+def validate_itinerary(response_json, city):
+    """Validates the AI response and checks for lazy outputs."""
+    issues = []
+    
+    # Check for wrong city
+    if "san francisco" in json.dumps(response_json).lower() and city.lower() != "san francisco":
+        issues.append("wrong_city")
+    
+    # Check for generic names
+    generic_names = ["local cafe", "nearby restaurant", "city restaurant", "the cafe", "main street cafe"]
+    for item in response_json.get('timeline', []):
+        title = item.get('title', '').lower()
+        if any(generic in title for generic in generic_names):
+            issues.append(f"generic_name:{item.get('title')}")
+    
+    # Check for minimum content
+    if len(response_json.get('timeline', [])) < 2:
+        issues.append("too_few_stops")
+    
+    return issues
+
+
+# --- ROUTES ---
 @app.route('/', methods=['GET'])
 def health_check():
-    return "Travel Buddy Final (Auto-Discovery + Geopy) is Running!", 200
+    return jsonify({
+        "status": "healthy",
+        "service": "Travel Buddy Pro v2.0",
+        "features": ["emotional_intelligence", "narrative_itineraries", "real_time_search"]
+    }), 200
+
 
 @app.route('/api/plan', methods=['POST'])
 def plan_trip():
     try:
         data = request.json
-        print("Received Data:", data)
-
-        # --- 4. ROBUST LOCATION LOGIC ---
-        trip_type = data.get('plan_type', 'NOW')
-        loc_input = data['context'].get('location', '')
-        dest_input = data['context'].get('destination', '')
-        coords = data['context'].get('coordinates')
-
-        target_city = "Gurugram" # Ultimate Fallback
-
-        if trip_type == 'TRIP' and dest_input and len(dest_input) > 2:
-            target_city = dest_input
+        print(f"\n{'='*50}")
+        print("📥 New Trip Request")
+        print(f"{'='*50}")
+        print(json.dumps(data, indent=2))
         
-        elif coords and HAS_GEOPY:
-            try:
-                # Use coordinates to find the real city
-                print(f"📍 Geocoding Coords: {coords['lat']}, {coords['lng']}")
-                location = geolocator.reverse(f"{coords['lat']}, {coords['lng']}", language='en')
-                address = location.raw['address']
-                target_city = address.get('city') or address.get('town') or address.get('state') or "Gurugram"
-                print(f"✅ Detected City: {target_city}")
-            except Exception as e:
-                print(f"⚠️ Geocoding failed: {e}")
-                target_city = "Gurugram"
-
-        elif loc_input:
-            if "Location" in loc_input or "Found" in loc_input:
-                 target_city = "Gurugram"
-            else:
-                 target_city = loc_input
-
-        print(f"🎯 FINAL TARGET CITY: {target_city}")
-
-        # --- 5. SEARCH ---
+        # --- 1. RESOLVE LOCATION ---
+        target_city = resolve_location(data)
+        print(f"🎯 Target City: {target_city}")
+        
+        # --- 2. BUILD TRAVELER PROFILE ---
+        traveler = data.get('traveler', {})
+        profile = {
+            "group": traveler.get('group', 'solo'),
+            "occasion": traveler.get('occasion', 'exploration'),
+            "energy": traveler.get('pace', 'balanced'),
+            "food_style": traveler.get('food', 'casual'),
+            "crowd_pref": traveler.get('crowds', 'mixed'),
+            "constraints": traveler.get('constraints', []),
+            "personal_note": traveler.get('personal_note', ''),
+            "budget": data.get('users', {}).get('budget', 'Standard')
+        }
+        
+        print(f"👤 Traveler Profile: {json.dumps(profile, indent=2)}")
+        
+        # --- 3. GET TIME CONTEXT ---
+        time_phase, time_flavor = get_time_context()
+        print(f"🕐 Time Context: {time_phase}")
+        
+        # --- 4. REAL-TIME SEARCH ---
         search_context = ""
         if tavily:
             try:
-                q = f"Top rated tourist attractions and restaurants in {target_city} for {data.get('users', {}).get('vibe', 'general')} vibe"
-                print(f"🔎 Searching: {q}")
-                res = tavily.search(query=q, max_results=4) 
-                if res.get('results'):
-                    search_context = json.dumps(res['results'])
-            except: pass
-
-        # --- 6. GENERATE ---
+                query = build_search_query(target_city, profile)
+                print(f"🔎 Search Query: {query}")
+                
+                results = tavily.search(query=query, max_results=6)
+                if results.get('results'):
+                    search_context = json.dumps(results['results'], indent=2)
+                    print(f"✅ Found {len(results['results'])} search results")
+            except Exception as e:
+                print(f"⚠️ Search failed: {e}")
+        
+        # --- 5. BUILD THE MASTER PROMPT ---
+        trip_type = data.get('plan_type', 'NOW')
+        
+        constraints_text = ""
+        if profile['constraints']:
+            constraints_text = f"HARD CONSTRAINTS (must respect): {', '.join(profile['constraints'])}"
+        
+        personal_context = ""
+        if profile['personal_note']:
+            personal_context = f"PERSONAL CONTEXT: {profile['personal_note']}"
+        
         full_prompt = f"""
-        {SYSTEM_PROMPT}
+{SYSTEM_PROMPT}
+
+---
+## THIS TRIP'S CONTEXT
+
+**Location**: {target_city}
+**Plan Type**: {trip_type}
+**Current Time Phase**: {time_phase} - {time_flavor}
+
+**Traveler Profile**:
+- Group: {profile['group']}
+- Occasion: {profile['occasion']}
+- Pace: {profile['energy']}
+- Food Preference: {profile['food_style']}
+- Crowd Preference: {profile['crowd_pref']}
+- Budget: {profile['budget']}
+{constraints_text}
+{personal_context}
+
+**Real-Time Search Results** (use these as primary source):
+{search_context if search_context else f"No search results available. Use your internal knowledge of {target_city} to suggest real, specific places."}
+
+---
+## INSTRUCTIONS FOR THIS PLAN
+
+Create a {trip_type} itinerary for {target_city}.
+- If NOW: Plan for the next 4-6 hours starting from {time_phase}
+- If TOMORROW: Plan a full day (morning to night)
+- If TRIP: Plan a full vacation day
+
+Remember to:
+1. Only suggest REAL places with specific names
+2. Match every suggestion to their stated preferences
+3. Write in your warm, narrative style
+4. Include practical transition details
+5. Respect their constraints absolutely
+
+Output valid JSON only. No markdown. No explanation outside the JSON.
+"""
         
-        CONTEXT:
-        - Plan: {trip_type}
-        - City: {target_city}
-        - Vibe: {json.dumps(data.get('users'))}
-        
-        AVAILABLE PLACES:
-        {search_context if search_context else "Search failed. Use internal knowledge for " + target_city}
-        """
-        
+        # --- 6. GET AI RESPONSE ---
+        print("🤖 Generating itinerary...")
         raw_response = ask_google(full_prompt)
-        clean_json = raw_response.replace("```json", "").replace("```", "").strip()
         
-        # Double Check for San Francisco bug
-        if "San Francisco" in clean_json:
-             full_prompt += f"\n\nERROR: You generated a plan for the wrong city. REWRITE for {target_city}."
-             raw_response = ask_google(full_prompt)
-             clean_json = raw_response.replace("```json", "").replace("```", "").strip()
+        # Clean the response
+        clean_json = raw_response.strip()
+        if clean_json.startswith("```json"):
+            clean_json = clean_json[7:]
+        if clean_json.startswith("```"):
+            clean_json = clean_json[3:]
+        if clean_json.endswith("```"):
+            clean_json = clean_json[:-3]
+        clean_json = clean_json.strip()
+        
+        # Parse JSON
+        parsed_response = json.loads(clean_json)
+        
+        # --- 7. VALIDATE OUTPUT ---
+        issues = validate_itinerary(parsed_response, target_city)
+        
+        if issues:
+            print(f"⚠️ Validation Issues: {issues}")
+            
+            # Force a rewrite
+            fix_prompt = f"""
+The previous response had these issues: {issues}
 
-        return jsonify(json.loads(clean_json))
+REWRITE the itinerary for {target_city} with ONLY real, specific place names.
+Do not use generic names like "Local Cafe" or "City Restaurant".
+Do not suggest places in the wrong city.
 
+{full_prompt}
+"""
+            raw_response = ask_google(fix_prompt)
+            clean_json = raw_response.replace("```json", "").replace("```", "").strip()
+            parsed_response = json.loads(clean_json)
+        
+        print("✅ Itinerary generated successfully!")
+        return jsonify(parsed_response)
+    
+    except json.JSONDecodeError as e:
+        print(f"❌ JSON Parse Error: {e}")
+        return jsonify({
+            "error": "The AI returned an invalid response. Please try again.",
+            "details": str(e)
+        }), 500
+    
     except Exception as e:
-        print(f"Server Error: {e}")
-        return jsonify({"error": str(e)}), 500
+        print(f"❌ Server Error: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
 
+
+# --- STARTUP ---
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    port = int(os.environ.get('PORT', 5000))
+    print(f"\n🚀 Travel Buddy Pro v2.0 starting on port {port}")
+    print("=" * 50)
+    app.run(host='0.0.0.0', port=port, debug=False)
