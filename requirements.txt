@@ -2,5 +2,5 @@ flask
 flask-cors
 requests
 tavily-python
-google-generativeai
 geopy
+gunicorn
