@@ -26,22 +26,9 @@ tavily = None
 if TAVILY_API_KEY:
     tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
-# 1. AUTO-DISCOVERY FUNCTION
+# 1. SIMPLIFIED MODEL SELECTOR (Force Stable V1)
 def get_live_model():
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
-        response = requests.get(url)
-        data = response.json()
-        preferred = ["gemini-1.5-flash", "gemini-1.5-pro", "gemini-1.0-pro", "gemini-pro"]
-        available = []
-        if 'models' in data:
-            for m in data['models']:
-                if 'generateContent' in m.get('supportedGenerationMethods', []):
-                    available.append(m['name'].replace("models/", ""))
-        for p in preferred:
-            if p in available: return p
-        if available: return available[0]
-    except: pass
+    # We will prioritize gemini-pro on v1 because it is the most stable
     return "gemini-pro"
 
 # 2. SYSTEM PROMPT
@@ -67,13 +54,13 @@ CRITICAL RULES:
 - **Travel Time:** Use the "Distance Context" provided to estimate realistic travel times.
 
 OUTPUT JSON FORMAT:
-{
-  "meta": { 
+{{
+  "meta": {{ 
     "summary": "One sentence overview.", 
     "weather_advice": "General advice (e.g., carry an umbrella)." 
-  },
+  }},
   "timeline": [
-    {
+    {{
       "time_slot": "14:00 - 15:30",
       "activity_type": "FOOD | ACTIVITY | TRAVEL",
       "title": "Name of Place",
@@ -81,9 +68,9 @@ OUTPUT JSON FORMAT:
       "description": "Why this fits + details.",
       "estimated_travel_time_next": "25 mins by car",
       "google_query": "Place Name City"
-    }
+    }}
   ]
-}
+}}
 """
 
 @app.route('/', methods=['GET'])
@@ -100,8 +87,7 @@ def plan_trip():
     current_location = data['context'].get('location', 'Unknown')
     search_city = data['context'].get('destination', current_location)
     
-    if trip_type == 'TRIP' and search_city == current_location:
-         # Fallback if specific destination not set, try user notes or default
+    if trip_type == 'TRIP' and (not search_city or search_city == current_location):
         search_city = data['context'].get('user_notes', current_location)
 
     # Coordinates
@@ -113,9 +99,8 @@ def plan_trip():
     today_str = datetime.now().strftime("%Y-%m-%d")
     
     # --- 2. SEARCH ---
-    search_results_text = ""
-    first_result_coords = None
-
+    search_results_text = "No external search data."
+    
     if tavily:
         try:
             # A. Movies
@@ -124,29 +109,21 @@ def plan_trip():
             
             # B. Places
             place_query = f"Best tourist spots, restaurants, and things to do in {search_city}"
-            places = tavily.search(query=place_query, max_results=8)
+            places = tavily.search(query=place_query, max_results=6)
             
             combined_results = movies.get('results', []) + places.get('results', [])
             search_results_text = json.dumps(combined_results)
 
-            # Try to get coords from first result for distance calc
-            if places.get('results'):
-                # Tavily sometimes doesn't give coords, but if it did, we'd use them
-                pass 
-
         except Exception as e:
             print(f"Search Error: {e}")
-            search_results_text = "No external search data available."
 
-    # --- 3. CALCULATE DISTANCE (The Geopy Fix) ---
+    # --- 3. CALCULATE DISTANCE (Geopy) ---
     distance_hint = "Calculate travel times based on city traffic."
-    
-    # We don't have the destination coordinates easily unless we Geocode the city name.
-    # For now, we rely on the AI knowing the distance between 'start_coords' and 'search_city'.
-    if start_coords and search_city != current_location:
-         distance_hint = f"The user is currently at {start_coords}. They are traveling to {search_city}. Calculate travel time between these two points first."
+    if HAS_GEOPY and start_coords:
+         # In a real app we would calculate dist to destination, but for now we give context
+         distance_hint = f"The user is starting at coordinates {start_coords}. Calculate realistic travel times from there."
 
-    # --- 4. GEMINI GENERATION ---
+    # --- 4. GEMINI GENERATION (STABLE V1) ---
     try:
         model_name = get_live_model()
         
@@ -166,7 +143,8 @@ def plan_trip():
         {search_results_text}
         """
         
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
+        # *** FIX IS HERE: Changed v1beta -> v1 ***
+        url = f"https://generativelanguage.googleapis.com/v1/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
         headers = {'Content-Type': 'application/json'}
         payload = { "contents": [{ "parts": [{"text": full_prompt}] }] }
         
@@ -174,8 +152,9 @@ def plan_trip():
         
         if response.status_code != 200:
             print(f"GOOGLE ERROR: {response.text}")
+            # Fallback to help user debug on frontend if needed
             return jsonify({
-                "meta": {"summary": "AI overloaded. Please try again."}, 
+                "meta": {"summary": "Google AI Error. Check Logs."}, 
                 "timeline": []
             })
 
