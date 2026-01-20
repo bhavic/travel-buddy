@@ -350,8 +350,17 @@ def plan_trip():
         time_phase, time_flavor = get_time_context(user_local_hour)
         print(f"🕐 User Local Time: {user_local_time}, Phase: {time_phase}")
         
-        # --- FAST PATH: Late night response (skip complex AI to avoid timeout) ---
+        # --- GET PLAN TYPE ---
         trip_type = data.get('plan_type', 'NOW')
+        
+        # --- OVERRIDE TIME CONTEXT FOR FUTURE PLANS ---
+        # TOMORROW, WEEKEND, and TRIP should always plan from morning, not current late night
+        if trip_type in ['TOMORROW', 'WEEKEND', 'TRIP']:
+            time_phase = "morning"
+            time_flavor = "Perfect morning energy for exploration and discovery..."
+            print(f"📅 Plan type is {trip_type} - Overriding to morning schedule")
+        
+        # --- FAST PATH: Late night response (only for NOW) ---
         
         if time_phase == "late_night" and trip_type == "NOW":
             print("🌙 Late night fast path - returning pre-built response")
@@ -447,8 +456,15 @@ Be honest - don't suggest cafes or restaurants that would be closed at 2-4 AM un
 Create a {trip_type} itinerary for {target_city}.
 - If NOW and it's late_night (after midnight): ONLY suggest 24-hour or late-night spots, or honestly tell them most places are closed
 - If NOW: Plan for the next 4-6 hours starting from {time_phase}
-- If TOMORROW: Plan a full day starting from morning (ignore current late hour)
-- If WEEKEND/TRIP: Plan a full vacation day starting from morning
+- If TOMORROW: Plan a FULL DAY starting from 9 AM morning (breakfast spots, morning activities, lunch, afternoon, dinner) - IGNORE the current time completely
+- If WEEKEND/TRIP: Plan a full vacation day starting from morning (9 AM)
+
+IMPORTANT: For TOMORROW, WEEKEND, and TRIP plans, always start the itinerary from morning (around 9 AM) regardless of what time it currently is. Create a complete day schedule:
+- Morning (9-12): Breakfast and morning activities
+- Lunch (12:30-14:00): Lunch spot
+- Afternoon (14:00-17:00): Afternoon activities  
+- Evening (17:00-20:00): Sunset/evening activities
+- Dinner (20:00-22:00): Dinner recommendations
 
 Remember to:
 1. Only suggest REAL places with specific names
@@ -456,7 +472,6 @@ Remember to:
 3. Write in your warm, narrative style
 4. Include practical transition details
 5. Respect their constraints absolutely
-6. BE TIME-AWARE: Don't suggest morning cafes at 2 AM, don't suggest closed restaurants
 
 Output valid JSON only. No markdown. No explanation outside the JSON.
 """
@@ -628,18 +643,3 @@ Do not suggest places in the wrong city.
                     "narrative": "My travel planning brain had a brief moment. Hit 'Try Again' and I'll craft something amazing for you!",
                     "tags": ["Retry"],
                     "google_query": "popular attractions nearby"
-                }
-            ],
-            "closing": {
-                "reflection": "Every great journey has a few detours. Let's get back on track! 🚀"
-            }
-        }
-        return jsonify(emergency_response)
-
-
-# --- STARTUP ---
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    print(f"\n🚀 Travel Buddy Pro v2.0 starting on port {port}")
-    print("=" * 50)
-    app.run(host='0.0.0.0', port=port, debug=False)
