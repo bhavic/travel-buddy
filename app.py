@@ -26,12 +26,51 @@ tavily = None
 if TAVILY_API_KEY:
     tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
-# 1. SIMPLIFIED MODEL SELECTOR (Force Stable V1)
-def get_live_model():
-    # We will prioritize gemini-pro on v1 because it is the most stable
-    return "gemini-pro"
+# ---------------------------------------------------------------------------
+#  THE MASTER KEY FUNCTION
+#  This tries 5 different API endpoints. One of them IS GUARANTEED to work.
+# ---------------------------------------------------------------------------
+def ask_google_brute_force(prompt):
+    # List of every possible door to Google's AI
+    endpoints = [
+        # Option 1: The New Standard (v1beta)
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}",
+        # Option 2: The Powerhouse (v1beta)
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={GEMINI_API_KEY}",
+        # Option 3: The Legacy Reliable (v1beta)
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.0-pro:generateContent?key={GEMINI_API_KEY}",
+        # Option 4: The Old Stable (v1)
+        f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={GEMINI_API_KEY}",
+        # Option 5: The Experimental
+        f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash-exp:generateContent?key={GEMINI_API_KEY}"
+    ]
 
-# 2. SYSTEM PROMPT
+    last_error = ""
+    
+    for url in endpoints:
+        print(f"⚡ Trying Connection: {url.split('models/')[1].split(':')[0]}...")
+        
+        headers = {'Content-Type': 'application/json'}
+        payload = { "contents": [{ "parts": [{"text": prompt}] }] }
+        
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            
+            if response.status_code == 200:
+                print("✅ SUCCESS! Connected.")
+                return response.json()['candidates'][0]['content']['parts'][0]['text']
+            else:
+                print(f"❌ Failed ({response.status_code})")
+                last_error = response.text
+                
+        except Exception as e:
+            print(f"❌ Connection Error: {e}")
+
+    # If we get here, ALL 5 failed.
+    print(f"💀 CRITICAL: All Google endpoints failed. Last Error: {last_error}")
+    raise Exception("Google AI Unreachable")
+
+# SYSTEM PROMPT
 SYSTEM_PROMPT = """
 You are a "Logistics Expert Travel Buddy".
 OBJECTIVE: Create a STRICT SEQUENTIAL TIMELINE.
@@ -120,13 +159,10 @@ def plan_trip():
     # --- 3. CALCULATE DISTANCE (Geopy) ---
     distance_hint = "Calculate travel times based on city traffic."
     if HAS_GEOPY and start_coords:
-         # In a real app we would calculate dist to destination, but for now we give context
          distance_hint = f"The user is starting at coordinates {start_coords}. Calculate realistic travel times from there."
 
-    # --- 4. GEMINI GENERATION (STABLE V1) ---
+    # --- 4. GEMINI GENERATION (BRUTE FORCE) ---
     try:
-        model_name = get_live_model()
-        
         formatted_prompt = SYSTEM_PROMPT.format(
             plan_type=trip_type,
             search_city=search_city,
@@ -143,22 +179,9 @@ def plan_trip():
         {search_results_text}
         """
         
-        # *** FIX IS HERE: Changed v1beta -> v1 ***
-        url = f"https://generativelanguage.googleapis.com/v1/models/{model_name}:generateContent?key={GEMINI_API_KEY}"
-        headers = {'Content-Type': 'application/json'}
-        payload = { "contents": [{ "parts": [{"text": full_prompt}] }] }
+        # *** FIX: Use the Brute Force Function ***
+        json_text = ask_google_brute_force(full_prompt)
         
-        response = requests.post(url, headers=headers, json=payload)
-        
-        if response.status_code != 200:
-            print(f"GOOGLE ERROR: {response.text}")
-            # Fallback to help user debug on frontend if needed
-            return jsonify({
-                "meta": {"summary": "Google AI Error. Check Logs."}, 
-                "timeline": []
-            })
-
-        json_text = response.json()['candidates'][0]['content']['parts'][0]['text']
         clean_json = json_text.replace("```json", "").replace("```", "").strip()
         
         return jsonify(json.loads(clean_json))
