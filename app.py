@@ -276,7 +276,7 @@ def ask_google(prompt, temperature=0.7):
         raise Exception(f"AI connection failed: {str(e)}")
 
 
-def validate_itinerary(response_json, city):
+def validate_itinerary(response_json, city, time_phase="day"):
     """Validates the AI response and checks for lazy outputs."""
     issues = []
     
@@ -291,9 +291,16 @@ def validate_itinerary(response_json, city):
         if any(generic in title for generic in generic_names):
             issues.append(f"generic_name:{item.get('title')}")
     
-    # Check for minimum content
-    if len(response_json.get('timeline', [])) < 2:
-        issues.append("too_few_stops")
+    # Check for minimum content - BUT allow fewer stops for late night
+    timeline_length = len(response_json.get('timeline', []))
+    if time_phase == "late_night":
+        # Late night: even 0-1 stops is OK (AI might say "most places are closed")
+        if timeline_length < 0:  # Always passes for late night
+            issues.append("too_few_stops")
+    else:
+        # Normal hours: require at least 2 stops
+        if timeline_length < 2:
+            issues.append("too_few_stops")
     
     return issues
 
@@ -441,8 +448,8 @@ Output valid JSON only. No markdown. No explanation outside the JSON.
         # Parse JSON
         parsed_response = json.loads(clean_json)
         
-        # --- 7. VALIDATE OUTPUT ---
-        issues = validate_itinerary(parsed_response, target_city)
+        # --- 7. VALIDATE OUTPUT (pass time_phase for late-night leniency) ---
+        issues = validate_itinerary(parsed_response, target_city, time_phase)
         
         if issues:
             print(f"⚠️ Validation Issues: {issues}")
