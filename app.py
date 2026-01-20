@@ -17,29 +17,52 @@ tavily = None
 if TAVILY_API_KEY:
     tavily = TavilyClient(api_key=TAVILY_API_KEY)
 
+# --- THE MODEL HUNT ---
+# We will try these models in order until one works.
+MODELS_TO_TRY = [
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-1.0-pro",
+    "gemini-pro"
+]
+
 def ask_google_ai(prompt):
-    # CHANGED TO V1 (Stable) and gemini-pro
-    url = f"https://generativelanguage.googleapis.com/v1/models/gemini-pro:generateContent?key={GEMINI_API_KEY}"
-    headers = {'Content-Type': 'application/json'}
-    payload = {
-        "contents": [{
-            "parts": [{"text": prompt}]
-        }]
-    }
+    last_error = ""
     
-    response = requests.post(url, headers=headers, json=payload)
-    
-    if response.status_code != 200:
-        # Print exact error to logs
-        print(f"GOOGLE ERROR: {response.text}")
-        raise Exception(f"Google Error {response.status_code}: {response.text}")
+    for model in MODELS_TO_TRY:
+        print(f"⚡ Trying model: {model}...")
         
-    return response.json()['candidates'][0]['content']['parts'][0]['text']
+        # Try connecting to this specific model
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
+        headers = {'Content-Type': 'application/json'}
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt}]
+            }]
+        }
+        
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            
+            # If successful (Status 200), return the text immediately
+            if response.status_code == 200:
+                print(f"✅ SUCCESS with {model}!")
+                return response.json()['candidates'][0]['content']['parts'][0]['text']
+            else:
+                # If failed, log it and let the loop try the next one
+                print(f"❌ {model} failed: {response.text}")
+                last_error = response.text
+                
+        except Exception as e:
+            print(f"Connection Error with {model}: {e}")
+            
+    # If we tried ALL models and none worked, then crash
+    raise Exception(f"All Google Models Failed. Last Error: {last_error}")
 
 SYSTEM_PROMPT = """
 You are the "Dynamic Trip Companion".
-OBJECTIVE: Return a JSON plan.
-- Prioritize Bucket List.
+OBJECTIVE: Return a JSON plan based on inputs.
+- Prioritize "User Places".
 - If empty, use Search Results.
 
 OUTPUT JSON FORMAT:
@@ -96,9 +119,10 @@ def plan_trip():
     try:
         full_prompt = f"{SYSTEM_PROMPT}\n\nUSER DATA: {json.dumps(data)}\nSEARCH RESULTS: {search_context}"
         
+        # This will now auto-hunt for a working model
         json_response_string = ask_google_ai(full_prompt)
         
-        # Clean markdown
+        # Clean markdown if present
         clean_json = json_response_string.replace("```json", "").replace("```", "")
         
         return jsonify(json.loads(clean_json))
