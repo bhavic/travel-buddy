@@ -8,7 +8,6 @@ from tavily import TavilyClient
 app = Flask(__name__)
 CORS(app)
 
-# Pull keys from Render Environment Variables
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 
@@ -56,8 +55,6 @@ def plan_trip():
     # 1. SETUP SEARCH LOCATION
     location = data['context'].get('location', 'Gurugram')
     coords = data['context'].get('coordinates')
-    
-    # Define search_loc
     search_loc = f"{coords['lat']},{coords['lng']}" if coords else location
     
     search_context = "No search performed."
@@ -81,8 +78,8 @@ def plan_trip():
 
     # 3. GEMINI GENERATION
     try:
-        # FIXED: Switched to 'gemini-pro' which is universally available
-        model = genai.GenerativeModel('gemini-pro', system_instruction=SYSTEM_PROMPT)
+        # We use the specific 1.5-flash model which is the current stable free one
+        model = genai.GenerativeModel('gemini-1.5-flash', system_instruction=SYSTEM_PROMPT)
         
         user_prompt = f"USER DATA: {json.dumps(data)}\nSEARCH RESULTS: {search_context}"
         
