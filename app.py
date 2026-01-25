@@ -462,12 +462,14 @@ def get_weather(city, country_code="IN"):
 # ==================================================
 
 def get_now_playing_movies(city):
-    """Gets currently playing movies using web search."""
+    """Gets currently playing movies using web search with current date."""
     if not tavily:
         return []
     
     try:
-        query = f"movies now playing in {city} today showtimes PVR INOX Cinepolis"
+        # Include current date to get fresh results
+        today = datetime.now().strftime("%B %Y")  # e.g., "January 2026"
+        query = f"movies now playing in {city} {today} showtimes PVR INOX Cinepolis new releases"
         results = tavily.search(query=query, max_results=5)
         return results.get('results', [])
     except Exception as e:
@@ -956,20 +958,27 @@ def execute_smart_plan(intent, answers, data):
     # Build searches
     search_results = {}
     
+    # Get current date for fresh movie results
+    current_date = datetime.now().strftime("%B %Y")  # e.g., "January 2026"
+    
     # Primary intent search
     if tavily:
         try:
             if intent == "movie":
                 movie_pref = answers.get("movie_pref", "any")
-                movie_query = f"movies now playing in {city} showtimes today {movie_pref if movie_pref != 'any' else ''}"
+                # Search for CURRENT movies with today's date
+                movie_query = f"movies releasing and playing in {city} {current_date} new releases showtimes PVR INOX {movie_pref if movie_pref != 'any' else ''}"
+                print(f"🎬 Movie search: {movie_query}")
                 results = tavily.search(query=movie_query, max_results=5)
                 search_results["movie"] = results.get('results', [])
             
-            # Food search if needed
+            # Food search - look for places NEAR THEATERS (on the way)
             if food_timing in ["before", "after"]:
                 food_mod = food_mods.get(food_type, "")
                 budget_mod = budget_mods.get(budget, "")
-                food_query = f"{food_mod} restaurants in {city} {budget_mod} open now"
+                # Search for food near malls/theaters for "on the way" experience
+                food_query = f"{food_mod} restaurants near PVR INOX Cyber Hub {city} {budget_mod}"
+                print(f"🍽️ Food search: {food_query}")
                 results = tavily.search(query=food_query, max_results=4)
                 search_results["food"] = results.get('results', [])
         except Exception as e:
@@ -982,40 +991,44 @@ You are TripBuddy creating a plan for someone in {city}.
 USER REQUEST: "{data.get('query', '')}"
 USER PREFERENCES: {json.dumps(answers)}
 SEARCH DATA: {json.dumps(search_results)[:2500]}
+CURRENT DATE: {current_date}
 
-CREATE A GROUPED PLAN with this EXACT structure:
+CREATE A PLAN with this structure:
+1. FIRST: Show MOVIES card (what they'll watch)
+2. THEN: Show FOOD card (places ON THE WAY to the theater)
+
+EXACT JSON FORMAT:
 {{
-  "greeting": "Friendly opening",
-  "chain_explanation": "Your thinking (e.g., 'Found movies + dinner spots nearby!')",
+  "greeting": "Friendly opening about movie night",
+  "chain_explanation": "Since you want to eat {answers.get('food_timing', 'before')}, I found {answers.get('food_type', 'good')} food spots near the theaters!",
   "cards": [
     {{
       "card_type": "primary",
       "emoji": "🎬",
       "title": "Movies Playing Now",
-      "subtitle": "Your options",
+      "subtitle": "New releases in {city}",
       "options": [
-        {{"name": "Movie 1 at Theater", "highlight": "Why it's good", "details": "Showtimes | Price", "tags": ["Genre"], "google_query": "theater address"}},
-        {{"name": "Movie 2 at Theater", "highlight": "Why it's good", "details": "Showtimes | Price", "tags": ["Genre"], "google_query": "theater address"}}
+        {{"name": "Movie Name at Theater Name", "highlight": "Why see it", "details": "Showtimes | ₹Price", "tags": ["Genre"], "google_query": "theater full address"}}
       ]
     }},
     {{
-      "card_type": "anticipated",
+      "card_type": "anticipated", 
       "emoji": "🍽️",
-      "title": "{"Food BEFORE the Movie" if answers.get('food_timing') == 'before' else "Food AFTER the Movie" if answers.get('food_timing') == 'after' else "Nearby Food Spots"}",
-      "subtitle": "{"Quick options to grab before" if answers.get('food_timing') == 'before' else "Great spots for after"}",
+      "title": "{answers.get('food_type', 'Food').title() if answers.get('food_type') else 'Food'} Spots on the Way",
+      "subtitle": "Grab a bite {'before' if answers.get('food_timing') == 'before' else 'after'} the show",
       "options": [
-        {{"name": "Restaurant 1", "highlight": "Why it's good", "details": "Distance | Price range", "tags": ["Cuisine"], "google_query": "restaurant name city"}},
-        {{"name": "Restaurant 2", "highlight": "Why it's good", "details": "Distance | Price range", "tags": ["Cuisine"], "google_query": "restaurant name city"}}
+        {{"name": "Restaurant Name", "highlight": "Why it's good", "details": "Near [Theater] | ₹Price for two", "tags": ["Cuisine"], "google_query": "restaurant name city"}}
       ]
     }}
   ],
-  "closing": "Have fun!"
+  "closing": "Enjoy your movie night! 🍿"
 }}
 
-CRITICAL:
-- EACH CARD = ONE CATEGORY with 2-3 options INSIDE
-- Use REAL places from search results
-- {"Include " + answers.get('food_type', 'good') + " food options" if answers.get('food_timing') in ['before', 'after'] else "Focus on the main activity"}
+CRITICAL RULES:
+1. ONLY use movies from the search results - DO NOT make up movie names
+2. Food should be described as "near" or "on the way to" the theater
+3. Include 2-3 options per card
+4. Each option must have name, highlight, details, tags, google_query
 
 OUTPUT ONLY VALID JSON.
 """
