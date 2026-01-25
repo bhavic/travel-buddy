@@ -23,7 +23,12 @@ except ImportError:
     print("⚠️ Geopy not installed")
 
 app = Flask(__name__)
-CORS(app)
+# Explicitly allow all origins and headers for maximum compatibility
+CORS(app, resources={r"/api/*": {
+    "origins": "*",
+    "allow_headers": ["Content-Type", "Accept", "Authorization", "X-Requested-With"],
+    "methods": ["GET", "POST", "OPTIONS"]
+}}, supports_credentials=True)
 
 # --- CONFIGURATION ---
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
