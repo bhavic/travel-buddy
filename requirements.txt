@@ -1,7 +1,9 @@
-flask
+# Travel Buddy v3.0 - Intelligent Life Companion
+# Deploy to Render with Python
+
+flask>=2.0
 flask-cors
-requests
-tavily-python
-geopy
 gunicorn
-python-dateutil
+geopy
+tavily-python
+requests
