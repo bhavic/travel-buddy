@@ -7,10 +7,20 @@ import os
 import json
 import requests
 import hashlib
+import re
 from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from tavily import TavilyClient
+
+# BeautifulSoup for scraping BookMyShow
+try:
+    from bs4 import BeautifulSoup
+    HAS_BS4 = True
+    print("✅ BeautifulSoup Active - Web scraping enabled")
+except ImportError:
+    HAS_BS4 = False
+    print("⚠️ BeautifulSoup not installed")
 
 # --- GEOPY SETUP ---
 try:
@@ -337,6 +347,124 @@ def detect_intent(user_input):
     return detected if detected else [{"intent": "explore", "confidence": 0.5, "emoji": "🗺️", "chain": ["explore"], "duration": 180}]
 
 
+    return detected if detected else [{"intent": "explore", "confidence": 0.5, "emoji": "🗺️", "chain": ["explore"], "duration": 180}]
+
+
+# ==================================================
+# SELECTION & ITINERARY ENDPOINTS (NEW)
+# ==================================================
+
+@app.route('/api/options', methods=['POST'])
+def get_options():
+    """Returns selectable options for a specific step (e.g. 'movie' or 'food')."""
+    try:
+        data = request.json
+        category = data.get('category')  # "movie", "food", "activity"
+        city = resolve_location(data)
+        context = data.get('context', {})
+        preferences = data.get('preferences', {})
+        
+        print(f"🔍 Fetching options for: {category} in {city}")
+        
+        results = []
+        
+        if category == 'movie':
+            # Use our new hybrid scraper/search
+            movies = get_now_playing_movies(city)
+            for m in movies:
+                results.append({
+                    "id": hashlib.md5(m['title'].encode()).hexdigest(),
+                    "title": m['title'],
+                    "subtitle": m.get('source', 'Unknown Source'),
+                    "emoji": "🎬",
+                    "details": "Check showtimes",
+                    "value": m['title']
+                })
+                
+        elif category == 'food':
+            # Search for food based on preferences
+            food_type = preferences.get('food_type', 'best rated')
+            query = f"{food_type} restaurants in {city} open now"
+            if tavily:
+                tavily_results = tavily.search(query=query, max_results=6)
+                for res in tavily_results.get('results', []):
+                    results.append({
+                        "id": hashlib.md5(res['content'].encode()).hexdigest(),
+                        "title": res['title'].split(':')[0], # Clean title
+                        "subtitle": res['content'][:60] + "...",
+                        "emoji": "🍽️",
+                        "details": "Highly rated",
+                        "value": res['title']
+                    })
+        
+        elif category == 'activity':
+            # Search for things to do
+            query = f"fun things to do in {city} right now"
+            if tavily:
+                tavily_results = tavily.search(query=query, max_results=6)
+                for res in tavily_results.get('results', []):
+                    results.append({
+                        "id": hashlib.md5(res['title'].encode()).hexdigest(),
+                        "title": res['title'],
+                        "subtitle": res['content'][:60] + "...",
+                        "emoji": "✨",
+                        "details": "Recommended",
+                        "value": res['title']
+                    })
+        
+        return jsonify({
+            "category": category,
+            "options": results
+        })
+
+    except Exception as e:
+        print(f"❌ Options Error: {e}")
+        return jsonify({"options": []})
+
+
+@app.route('/api/itinerary', methods=['POST'])
+def generate_itinerary():
+    """Generates a final itinerary based on SELECTED items."""
+    try:
+        data = request.json
+        selections = data.get('selections', {})
+        city = resolve_location(data)
+        
+        print(f"📝 Generating itinerary for selections: {selections}")
+        
+        # Build prompt for Gemini
+        prompt = f"""
+        Create a detailed timed itinerary for someone in {city}.
+        
+        THEIR SELECTIONS:
+        {json.dumps(selections, indent=2)}
+        
+        Start time: Now ({datetime.now().strftime('%I:%M %p')})
+        
+        create a JSON response with:
+        {{
+            "title": "Your Custom Plan",
+            "total_duration": "e.g. 4 hours",
+            "timeline": [
+                {{
+                    "time": "5:00 PM",
+                    "action": "Head to [Place]",
+                    "description": "Details...",
+                    "emoji": "🚗"
+                }}
+            ],
+            "google_maps_link": "https://maps.google.com/..."
+        }}
+        """
+        
+        response = ask_gemini(prompt)
+        return jsonify(json.loads(response))
+        
+    except Exception as e:
+        print(f"❌ Itinerary Error: {e}")
+        return jsonify({"error": str(e)})
+
+
 # ==================================================
 # ACTIVITY CHAINING LOGIC
 # ==================================================
@@ -458,22 +586,99 @@ def get_weather(city, country_code="IN"):
 
 
 # ==================================================
-# MOVIE SEARCH (TMDB + Tavily)
+# BOOKMYSHOW SCRAPER (Live Data)
+# ==================================================
+
+def scrape_bookmyshow(city):
+    """Scrapes BookMyShow for currently playing movies."""
+    if not HAS_BS4:
+        print("⚠️ BS4 missing, skipping scraping")
+        return []
+        
+    try:
+        # Step 1: Find city code/url via search (simulated for simplicity)
+        # Using a direct search for "BookMyShow {city} movies" via Tavily to get URL
+        if not tavily:
+            return []
+            
+        search_query = f"BookMyShow movies {city} now showing page"
+        search_result = tavily.search(query=search_query, max_results=1)
+        
+        bms_url = None
+        if search_result.get('results'):
+            bms_url = search_result['results'][0]['url']
+        
+        if not bms_url or "bookmyshow.com" not in bms_url:
+            print("⚠️ Coudln't find BMS URL")
+            return []
+            
+        print(f"🕷️ Scraping: {bms_url}")
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(bms_url, headers=headers, timeout=5)
+        
+        if response.status_code != 200:
+            return []
+            
+        soup = BeautifulSoup(response.content, 'html.parser')
+        movies = []
+        
+        # BMS structure often changes, looking for common movie card classes
+        # This is a generic scraper attempting to find movie titles
+        # Looking for standard card structures
+        cards = soup.find_all('div', class_=re.compile(r'style__StyledText-sc-7o7nez-0'))
+        
+        # Fallback to general title search if specific classes fail
+        if not cards:
+            title_tags = soup.find_all(['h3', 'h4', 'div'], string=re.compile(r'.+'))
+            seen = set()
+            for tag in title_tags:
+                text = tag.get_text().strip()
+                # Filter noise
+                if len(text) > 3 and len(text) < 50 and text not in seen:
+                    # Basic heuristics to identify potential movie titles
+                    if not any(x in text.lower() for x in ['movies', 'events', 'plays', 'activities', 'privacy', 'contact']):
+                        seen.add(text)
+                        movies.append({
+                            "title": text,
+                            "url": bms_url,
+                            "source": "BookMyShow"
+                        })
+                        if len(movies) >= 8: break
+        
+        return movies
+        
+    except Exception as e:
+        print(f"⚠️ Scraping failed: {e}")
+        return []
+
+# ==================================================
+# MOVIE SEARCH (Hybrid: Scraper + Tavily)
 # ==================================================
 
 def get_now_playing_movies(city):
-    """Gets currently playing movies using web search with current date."""
+    """Gets currently playing movies (tries scraping first, then Tavily)."""
+    
+    # 1. Try scraping first for REAL live data
+    scraped_movies = scrape_bookmyshow(city)
+    if scraped_movies:
+        print(f"✅ Found {len(scraped_movies)} movies via scraping")
+        return scraped_movies
+    
+    # 2. Fallback to Tavily
     if not tavily:
         return []
     
     try:
         # Include current date to get fresh results
         today = datetime.now().strftime("%B %Y")  # e.g., "January 2026"
-        query = f"movies now playing in {city} {today} showtimes PVR INOX Cinepolis new releases"
+        query = f"movies playing in {city} {today} bookmyshow showtimes"
         results = tavily.search(query=query, max_results=5)
         return results.get('results', [])
     except Exception as e:
-        print(f"⚠️ Movie search failed: {e}")
+        print(f"⚠️ Search failed: {e}")
         return []
 
 
