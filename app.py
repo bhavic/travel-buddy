@@ -369,17 +369,21 @@ def get_options():
         results = []
         
         if category == 'movie':
-            # Use our new hybrid scraper/search
-            movies = get_now_playing_movies(city)
-            for m in movies:
-                results.append({
-                    "id": hashlib.md5(m['title'].encode()).hexdigest(),
-                    "title": m['title'],
-                    "subtitle": m.get('source', 'Unknown Source'),
-                    "emoji": "🎬",
-                    "details": "Check showtimes",
-                    "value": m['title']
-                })
+            # Priority 1: TMDB API (most reliable for current movies)
+            results = get_tmdb_now_playing()
+            
+            # Priority 2: Fallback to scraping if TMDB fails
+            if not results:
+                movies = get_now_playing_movies(city)
+                for m in movies:
+                    results.append({
+                        "id": hashlib.md5(m.get('title', 'unknown').encode()).hexdigest(),
+                        "title": m.get('title', 'Unknown Movie'),
+                        "subtitle": m.get('source', 'Unknown Source'),
+                        "emoji": "🎬",
+                        "details": "Check showtimes",
+                        "value": m.get('title', 'Unknown')
+                    })
                 
         elif category == 'food':
             # Search for food based on preferences
@@ -603,6 +607,47 @@ def get_weather(city, country_code="IN"):
     except Exception as e:
         print(f"⚠️ Weather fetch failed: {e}")
     return None
+
+
+# ==================================================
+# TMDB LIVE MOVIE DATA (Now Playing)
+# ==================================================
+
+def get_tmdb_now_playing():
+    """Fetches currently playing movies in India from TMDB API."""
+    if not TMDB_API_KEY:
+        print("⚠️ TMDB API key not configured")
+        return []
+    
+    try:
+        # TMDB now_playing endpoint for India region
+        url = f"https://api.themoviedb.org/3/movie/now_playing?api_key={TMDB_API_KEY}&region=IN&language=en-IN&page=1"
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            movies = []
+            
+            for movie in data.get('results', [])[:8]:  # Top 8 movies
+                movies.append({
+                    "id": str(movie['id']),
+                    "title": movie['title'],
+                    "subtitle": f"⭐ {movie['vote_average']:.1f} • {movie.get('release_date', 'New')[:4]}",
+                    "emoji": "🎬",
+                    "details": movie.get('overview', '')[:80] + "...",
+                    "value": movie['title'],
+                    "poster": f"https://image.tmdb.org/t/p/w200{movie['poster_path']}" if movie.get('poster_path') else None
+                })
+            
+            print(f"✅ TMDB: Found {len(movies)} now playing movies")
+            return movies
+        else:
+            print(f"⚠️ TMDB API returned {response.status_code}")
+            
+    except Exception as e:
+        print(f"⚠️ TMDB fetch failed: {e}")
+    
+    return []
 
 
 # ==================================================
