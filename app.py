@@ -412,6 +412,26 @@ def get_options():
                         "value": res['title']
                     })
         
+        if not results:
+            print(f"⚠️ No results found for {category}, adding fallback options")
+            if category == 'movie':
+                results = [
+                    {"id": "mock1", "title": "Inception (Re-release)", "subtitle": "IMAX 2D", "emoji": "🎬", "details": "4.5 ★ • Sci-Fi", "value": "Inception"},
+                    {"id": "mock2", "title": "The Dark Knight", "subtitle": "Special Screening", "emoji": "🦇", "details": "4.9 ★ • Action", "value": "The Dark Knight"},
+                    {"id": "mock3", "title": "Interstellar", "subtitle": "IMAX Experience", "emoji": "🚀", "details": "4.8 ★ • Sci-Fi", "value": "Interstellar"},
+                ]
+            elif category == 'food':
+                results = [
+                    {"id": "mock_f1", "title": "Pizza Express", "subtitle": "Italian • Pizza", "emoji": "🍕", "details": "4.4 ★ • $$", "value": "Pizza Express"},
+                    {"id": "mock_f2", "title": "Burger King", "subtitle": "Fast Food • Burgers", "emoji": "🍔", "details": "4.1 ★ • $", "value": "Burger King"},
+                    {"id": "mock_f3", "title": "Starbucks", "subtitle": "Coffee • Snacks", "emoji": "☕", "details": "4.3 ★ • $$", "value": "Starbucks"},
+                ]
+            elif category == 'activity':
+                results = [
+                    {"id": "mock_a1", "title": "City Walk", "subtitle": "Explore downtown", "emoji": "🚶", "details": "Free • 1-2 hours", "value": "City Walk"},
+                    {"id": "mock_a2", "title": "Local Museum", "subtitle": "History & Art", "emoji": "🏛️", "details": "Ticketed • 2 hours", "value": "Local Museum"},
+                ]
+        
         return jsonify({
             "category": category,
             "options": results
