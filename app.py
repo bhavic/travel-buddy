@@ -642,11 +642,7 @@ def resolve_location(data):
 CHAIN_THINKING_PROMPT = """
 You are TripBuddy — an intelligent life companion that THINKS AHEAD like a thoughtful friend.
 
-## YOUR SUPERPOWER: CHAIN THINKING
-When someone says "I want to watch a movie", you don't just find movies.
-You think: Movie → What time? → Will they be hungry after? → Where to eat? → How to get there?
-
-## CONTEXT PROVIDED
+## CONTEXT
 - **User Query**: {query}
 - **Detected Intent**: {intent} (confidence: {confidence})
 - **Activity Chain**: {chain}
@@ -658,48 +654,70 @@ You think: Movie → What time? → Will they be hungry after? → Where to eat?
 - **User Preferences**: {preferences}
 
 ## YOUR TASK
-Create a SMART PLAN that anticipates their needs. Structure as "cards" that chain logically.
+Create a GROUPED plan with cards. IMPORTANT: Each card is a CATEGORY (like "Movies" or "Dinner Spots") that contains MULTIPLE options inside it.
 
-## OUTPUT FORMAT (Strict JSON)
+## EXAMPLE OUTPUT (for "I want to watch a movie"):
 {{
-  "greeting": "Warm, casual opening that shows you understood their intent",
-  "chain_explanation": "One sentence explaining your thinking (e.g., 'Since you'll finish around 9 PM, I found dinner spots too!')",
+  "greeting": "Movie night! 🎬 Let's make it awesome!",
+  "chain_explanation": "Since you'll finish around 9 PM, I found some dinner spots nearby too!",
   "cards": [
     {{
-      "card_type": "primary|anticipated|bonus",
+      "card_type": "primary",
       "emoji": "🎬",
-      "title": "Main heading",
-      "subtitle": "Brief context",
+      "title": "Movies Playing Now",
+      "subtitle": "Pick your show",
       "options": [
         {{
-          "name": "Specific place name",
-          "highlight": "What makes it special",
-          "details": "Time/distance/price info",
-          "tags": ["Tag1", "Tag2"],
-          "google_query": "exact search for Google Maps"
+          "name": "Dune: Part Two at PVR Ambience",
+          "highlight": "IMAX experience, stunning visuals",
+          "details": "Shows: 6:30 PM, 9:45 PM | ₹450",
+          "tags": ["Sci-Fi", "IMAX"],
+          "google_query": "PVR Ambience Mall Gurgaon"
+        }},
+        {{
+          "name": "Fighter at Cinepolis Cyber Hub",
+          "highlight": "Action-packed with Hrithik",
+          "details": "Shows: 7:00 PM, 10:15 PM | ₹380",
+          "tags": ["Action", "Hindi"],
+          "google_query": "Cinepolis Cyber Hub Gurgaon"
         }}
       ],
-      "transition": "How this connects to the next card (only if not last)"
-    }}
-  ],
-  "quick_actions": [
+      "transition": "After the movie, you'll probably want dinner..."
+    }},
     {{
-      "label": "Button text",
-      "action": "navigate|call|save|more",
-      "data": "relevant data for action"
+      "card_type": "anticipated",
+      "emoji": "🍽️",
+      "title": "Dinner After the Movie",
+      "subtitle": "Great spots near the theater",
+      "options": [
+        {{
+          "name": "Burma Burma",
+          "highlight": "Authentic Burmese, vegetarian friendly",
+          "details": "5 min walk from PVR | ₹1200 for two",
+          "tags": ["Vegetarian", "Asian"],
+          "google_query": "Burma Burma Cyber Hub"
+        }},
+        {{
+          "name": "Farzi Cafe",
+          "highlight": "Modern Indian, great cocktails",
+          "details": "In Cyber Hub | ₹1500 for two",
+          "tags": ["Indian", "Bar"],
+          "google_query": "Farzi Cafe Cyber Hub Gurgaon"
+        }}
+      ]
     }}
   ],
-  "closing": "Friendly sign-off with anticipation",
-  "follow_up_question": "Optional question if you need more info (null if not needed)"
+  "closing": "Enjoy your movie night! 🍿"
 }}
 
-## RULES
-1. ALWAYS use REAL place names — never generic like "Local Cafe"
-2. If chain includes food, ALWAYS include restaurant options
-3. Keep it conversational, not formal
-4. Show your chain thinking in chain_explanation
-5. Max 3 options per card to avoid overwhelm
-6. Include travel time between spots if relevant
+## CRITICAL RULES
+1. EACH CARD = ONE CATEGORY (Movies, Dinner, Cafes, etc.)
+2. EACH CARD MUST HAVE 2-3 OPTIONS INSIDE IT (not 1 per card!)
+3. Use REAL place names from the search results
+4. Include specific showtimes for movies, prices where possible
+5. Keep max 2-3 cards total
+
+OUTPUT ONLY VALID JSON, no markdown or explanation.
 """
 
 
@@ -957,18 +975,49 @@ def execute_smart_plan(intent, answers, data):
         except Exception as e:
             print(f"⚠️ Search error: {e}")
     
-    # Build prompt for Gemini
+    # Build prompt for Gemini with EXPLICIT structure
     smart_prompt = f"""
-You are TripBuddy. The user said: "{data.get('query', '')}"
-Their answers: {json.dumps(answers)}
-Location: {city}
-Search Results: {json.dumps(search_results)[:2500]}
+You are TripBuddy creating a plan for someone in {city}.
 
-Create a personalized plan based on THEIR EXACT preferences.
-{f"They want {food_type} food {food_timing} the movie." if intent == "movie" and food_timing != "none" else ""}
+USER REQUEST: "{data.get('query', '')}"
+USER PREFERENCES: {json.dumps(answers)}
+SEARCH DATA: {json.dumps(search_results)[:2500]}
 
-Output JSON with: greeting, chain_explanation, cards (with options including name, highlight, details, google_query), closing.
-Focus on REAL places from search results. Include showtimes for movies.
+CREATE A GROUPED PLAN with this EXACT structure:
+{{
+  "greeting": "Friendly opening",
+  "chain_explanation": "Your thinking (e.g., 'Found movies + dinner spots nearby!')",
+  "cards": [
+    {{
+      "card_type": "primary",
+      "emoji": "🎬",
+      "title": "Movies Playing Now",
+      "subtitle": "Your options",
+      "options": [
+        {{"name": "Movie 1 at Theater", "highlight": "Why it's good", "details": "Showtimes | Price", "tags": ["Genre"], "google_query": "theater address"}},
+        {{"name": "Movie 2 at Theater", "highlight": "Why it's good", "details": "Showtimes | Price", "tags": ["Genre"], "google_query": "theater address"}}
+      ]
+    }},
+    {{
+      "card_type": "anticipated",
+      "emoji": "🍽️",
+      "title": "{"Food BEFORE the Movie" if answers.get('food_timing') == 'before' else "Food AFTER the Movie" if answers.get('food_timing') == 'after' else "Nearby Food Spots"}",
+      "subtitle": "{"Quick options to grab before" if answers.get('food_timing') == 'before' else "Great spots for after"}",
+      "options": [
+        {{"name": "Restaurant 1", "highlight": "Why it's good", "details": "Distance | Price range", "tags": ["Cuisine"], "google_query": "restaurant name city"}},
+        {{"name": "Restaurant 2", "highlight": "Why it's good", "details": "Distance | Price range", "tags": ["Cuisine"], "google_query": "restaurant name city"}}
+      ]
+    }}
+  ],
+  "closing": "Have fun!"
+}}
+
+CRITICAL:
+- EACH CARD = ONE CATEGORY with 2-3 options INSIDE
+- Use REAL places from search results
+- {"Include " + answers.get('food_type', 'good') + " food options" if answers.get('food_timing') in ['before', 'after'] else "Focus on the main activity"}
+
+OUTPUT ONLY VALID JSON.
 """
     
     try:
