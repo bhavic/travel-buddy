@@ -7,3 +7,5 @@ gunicorn
 geopy
 tavily-python
 requests
+beautifulsoup4
+lxml
