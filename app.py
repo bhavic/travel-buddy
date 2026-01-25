@@ -47,6 +47,210 @@ if TAVILY_API_KEY:
     print("✅ Tavily Active - Real-time search enabled")
 
 # ==================================================
+# CONVERSATION STATE MACHINE (NEW)
+# ==================================================
+
+CLARIFYING_QUESTIONS = {
+    "movie": {
+        "questions": [
+            {
+                "id": "food_timing",
+                "text": "Want to eat before or after the movie?",
+                "options": [
+                    {"label": "🍽️ Before", "value": "before"},
+                    {"label": "🎬 After", "value": "after"},
+                    {"label": "🍿 Just snacks", "value": "snacks"},
+                    {"label": "🚫 Not hungry", "value": "none"}
+                ]
+            },
+            {
+                "id": "food_type",
+                "text": "What kind of food?",
+                "options": [
+                    {"label": "🍕 Quick bite", "value": "quick", "search_mod": "fast food quick service"},
+                    {"label": "🍝 Something nice", "value": "nice", "search_mod": "good restaurant dine in"},
+                    {"label": "🌮 Street food", "value": "street", "search_mod": "popular street food local famous"},
+                    {"label": "☕ Cafe vibes", "value": "cafe", "search_mod": "cafe coffee snacks"}
+                ],
+                "depends_on": {"food_timing": ["before", "after"]}
+            },
+            {
+                "id": "movie_pref",
+                "text": "What are you in the mood for?",
+                "options": [
+                    {"label": "🎬 New releases", "value": "new"},
+                    {"label": "⭐ Top rated", "value": "top"},
+                    {"label": "😂 Comedy", "value": "comedy"},
+                    {"label": "💥 Action", "value": "action"},
+                    {"label": "🤷 Surprise me", "value": "any"}
+                ]
+            }
+        ]
+    },
+    "food": {
+        "questions": [
+            {
+                "id": "food_type",
+                "text": "What kind of food are you craving?",
+                "options": [
+                    {"label": "🍕 Quick bite", "value": "quick"},
+                    {"label": "🍝 Proper meal", "value": "proper"},
+                    {"label": "🌮 Street food", "value": "street"},
+                    {"label": "☕ Cafe", "value": "cafe"},
+                    {"label": "🍻 Drinks + food", "value": "pub"}
+                ]
+            },
+            {
+                "id": "budget",
+                "text": "Budget?",
+                "options": [
+                    {"label": "💰 Under ₹500", "value": "budget"},
+                    {"label": "💳 ₹500-1500", "value": "mid"},
+                    {"label": "💎 No limit", "value": "premium"}
+                ]
+            }
+        ]
+    },
+    "bored": {
+        "questions": [
+            {
+                "id": "time_available",
+                "text": "How much time do you have?",
+                "options": [
+                    {"label": "⚡ 1-2 hours", "value": "short"},
+                    {"label": "🕐 Half day", "value": "half"},
+                    {"label": "📅 Full day", "value": "full"}
+                ]
+            },
+            {
+                "id": "energy_level",
+                "text": "Energy level?",
+                "options": [
+                    {"label": "🧘 Chill", "value": "chill"},
+                    {"label": "⚖️ Balanced", "value": "balanced"},
+                    {"label": "🎢 Adventurous", "value": "adventure"}
+                ]
+            }
+        ]
+    },
+    "day_plan": {
+        "questions": [
+            {
+                "id": "start_time",
+                "text": "What time do you want to start?",
+                "options": [
+                    {"label": "🌅 Morning (~9 AM)", "value": "morning"},
+                    {"label": "☀️ Noon (~12 PM)", "value": "noon"},
+                    {"label": "🌆 Evening (~5 PM)", "value": "evening"}
+                ]
+            },
+            {
+                "id": "vibe",
+                "text": "What's the vibe for the day?",
+                "options": [
+                    {"label": "🧘 Chill & Relaxed", "value": "chill"},
+                    {"label": "🎯 Active & Fun", "value": "active"},
+                    {"label": "💕 Romantic", "value": "romantic"},
+                    {"label": "🎉 Party mode", "value": "party"}
+                ]
+            },
+            {
+                "id": "must_include",
+                "text": "Must include?",
+                "type": "multi_select",
+                "options": [
+                    {"label": "🎬 Movie", "value": "movie"},
+                    {"label": "🍽️ Nice meal", "value": "meal"},
+                    {"label": "🛍️ Shopping", "value": "shopping"},
+                    {"label": "🌳 Outdoors", "value": "outdoors"},
+                    {"label": "☕ Cafe time", "value": "cafe"}
+                ]
+            },
+            {
+                "id": "budget",
+                "text": "Budget for the day?",
+                "options": [
+                    {"label": "💰 Under ₹1000", "value": "budget"},
+                    {"label": "💳 ₹1000-3000", "value": "mid"},
+                    {"label": "💎 No limit", "value": "premium"}
+                ]
+            }
+        ]
+    },
+    "date": {
+        "questions": [
+            {
+                "id": "date_type",
+                "text": "What kind of date?",
+                "options": [
+                    {"label": "🍽️ Dinner date", "value": "dinner"},
+                    {"label": "🎬 Movie + dinner", "value": "movie_dinner"},
+                    {"label": "🌆 Full day out", "value": "full_day"},
+                    {"label": "🌃 Night out", "value": "nightlife"}
+                ]
+            },
+            {
+                "id": "budget",
+                "text": "Budget?",
+                "options": [
+                    {"label": "💳 Normal", "value": "mid"},
+                    {"label": "💎 Splurge", "value": "premium"}
+                ]
+            }
+        ]
+    }
+}
+
+# Detect planning mode from query
+def detect_planning_mode(query):
+    """Detects if user wants spontaneous, day planning, or trip planning."""
+    query_lower = query.lower()
+    
+    # Day planning triggers
+    day_triggers = ["plan my", "plan the day", "full day", "whole day", "saturday", "sunday", "tomorrow", "today's plan"]
+    for trigger in day_triggers:
+        if trigger in query_lower:
+            return "day_plan"
+    
+    # Trip planning triggers
+    trip_triggers = ["trip to", "days in", "week in", "travel to", "vacation", "holiday"]
+    for trigger in trip_triggers:
+        if trigger in query_lower:
+            return "trip_plan"
+    
+    return "spontaneous"
+
+
+def get_next_question(intent, answers):
+    """Returns the next unanswered question based on current answers."""
+    questions = CLARIFYING_QUESTIONS.get(intent, {}).get("questions", [])
+    
+    for q in questions:
+        # Skip if already answered
+        if q["id"] in answers:
+            continue
+        
+        # Check dependencies
+        depends = q.get("depends_on", {})
+        skip = False
+        for dep_id, dep_values in depends.items():
+            if answers.get(dep_id) not in dep_values:
+                skip = True
+                break
+        
+        if not skip:
+            return q
+    
+    return None  # All questions answered
+
+
+def is_conversation_complete(intent, answers):
+    """Checks if all required questions have been answered."""
+    return get_next_question(intent, answers) is None
+
+
+
+# ==================================================
 # INTENT RECOGNITION SYSTEM
 # ==================================================
 
@@ -639,6 +843,240 @@ def assist():
             }],
             "closing": "Try again in a moment!"
         }), 500
+
+
+# ==================================================
+# NEW ENDPOINT: /api/clarify (Multi-turn Questions)
+# ==================================================
+
+@app.route('/api/clarify', methods=['POST'])
+def clarify():
+    """
+    Handles multi-turn conversations with clarifying questions.
+    Returns next question OR final plan when all questions answered.
+    """
+    try:
+        data = request.json
+        print(f"\n{'='*50}")
+        print("💬 Clarify Request")
+        print(f"{'='*50}")
+        
+        # Get conversation state
+        intent = data.get('intent', 'explore')
+        answers = data.get('answers', {})
+        original_query = data.get('original_query', '')
+        
+        print(f"🎯 Intent: {intent}")
+        print(f"📝 Answers so far: {answers}")
+        
+        # Check if conversation is complete
+        next_question = get_next_question(intent, answers)
+        
+        if next_question:
+            # Return the next question
+            print(f"❓ Next question: {next_question['id']}")
+            return jsonify({
+                "type": "clarification",
+                "question": next_question,
+                "intent": intent,
+                "progress": {
+                    "answered": len(answers),
+                    "total": len(CLARIFYING_QUESTIONS.get(intent, {}).get("questions", []))
+                }
+            })
+        
+        # All questions answered - execute the plan!
+        print("✅ All questions answered - generating plan")
+        
+        # Build enhanced context with answers
+        enhanced_data = {
+            **data,
+            "query": original_query,
+            "user_answers": answers
+        }
+        
+        # For day_plan, use special handler
+        if intent == "day_plan":
+            return execute_day_plan(enhanced_data)
+        
+        # For other intents, use enhanced assist
+        return execute_smart_plan(intent, answers, enhanced_data)
+    
+    except Exception as e:
+        print(f"❌ Clarify Error: {e}")
+        return jsonify({
+            "type": "error",
+            "message": str(e)[:100]
+        }), 500
+
+
+def execute_smart_plan(intent, answers, data):
+    """Executes the final plan based on intent and user answers."""
+    city = resolve_location(data)
+    context = data.get('context', {})
+    current_hour = context.get('local_hour', datetime.now().hour)
+    
+    # Build search queries based on answers
+    food_type = answers.get("food_type", "any")
+    food_timing = answers.get("food_timing", "none")
+    budget = answers.get("budget", "mid")
+    
+    # Search modifiers
+    food_mods = {
+        "quick": "fast food quick service",
+        "nice": "best rated restaurant dine in",
+        "street": "popular street food local famous",
+        "cafe": "cafe coffee snacks"
+    }
+    
+    budget_mods = {
+        "budget": "affordable cheap",
+        "mid": "",
+        "premium": "premium upscale fine dining"
+    }
+    
+    # Build searches
+    search_results = {}
+    
+    # Primary intent search
+    if tavily:
+        try:
+            if intent == "movie":
+                movie_pref = answers.get("movie_pref", "any")
+                movie_query = f"movies now playing in {city} showtimes today {movie_pref if movie_pref != 'any' else ''}"
+                results = tavily.search(query=movie_query, max_results=5)
+                search_results["movie"] = results.get('results', [])
+            
+            # Food search if needed
+            if food_timing in ["before", "after"]:
+                food_mod = food_mods.get(food_type, "")
+                budget_mod = budget_mods.get(budget, "")
+                food_query = f"{food_mod} restaurants in {city} {budget_mod} open now"
+                results = tavily.search(query=food_query, max_results=4)
+                search_results["food"] = results.get('results', [])
+        except Exception as e:
+            print(f"⚠️ Search error: {e}")
+    
+    # Build prompt for Gemini
+    smart_prompt = f"""
+You are TripBuddy. The user said: "{data.get('query', '')}"
+Their answers: {json.dumps(answers)}
+Location: {city}
+Search Results: {json.dumps(search_results)[:2500]}
+
+Create a personalized plan based on THEIR EXACT preferences.
+{f"They want {food_type} food {food_timing} the movie." if intent == "movie" and food_timing != "none" else ""}
+
+Output JSON with: greeting, chain_explanation, cards (with options including name, highlight, details, google_query), closing.
+Focus on REAL places from search results. Include showtimes for movies.
+"""
+    
+    try:
+        raw_response = ask_gemini(smart_prompt)
+        response = json.loads(raw_response.strip())
+        response['type'] = 'final_plan'
+        response['meta'] = {'intent': intent, 'answers': answers}
+        return jsonify(response)
+    except:
+        return jsonify({
+            "type": "final_plan",
+            "greeting": "Here's your personalized plan!",
+            "cards": [],
+            "closing": "Enjoy!"
+        })
+
+
+def execute_day_plan(data):
+    """Generates a full-day itinerary based on user preferences."""
+    city = resolve_location(data)
+    answers = data.get('user_answers', {})
+    context = data.get('context', {})
+    
+    start_time = answers.get("start_time", "morning")
+    vibe = answers.get("vibe", "balanced")
+    must_include = answers.get("must_include", [])
+    budget = answers.get("budget", "mid")
+    
+    # Time mapping
+    start_hours = {"morning": 9, "noon": 12, "evening": 17}
+    start_hour = start_hours.get(start_time, 9)
+    
+    # Search for activities
+    search_results = {}
+    if tavily:
+        try:
+            # Base search
+            vibe_query = f"things to do in {city} {vibe}"
+            results = tavily.search(query=vibe_query, max_results=5)
+            search_results["activities"] = results.get('results', [])
+            
+            # Food search
+            food_query = f"best restaurants in {city} {budget}"
+            results = tavily.search(query=food_query, max_results=4)
+            search_results["food"] = results.get('results', [])
+            
+            # Must-include searches
+            if "movie" in must_include:
+                results = tavily.search(query=f"movies playing in {city} today showtimes", max_results=3)
+                search_results["movie"] = results.get('results', [])
+            if "cafe" in must_include:
+                results = tavily.search(query=f"best cafes in {city}", max_results=3)
+                search_results["cafe"] = results.get('results', [])
+        except Exception as e:
+            print(f"⚠️ Day plan search error: {e}")
+    
+    # Build the day plan prompt
+    day_prompt = f"""
+You are TripBuddy creating a FULL DAY PLAN for someone in {city}.
+
+Their preferences:
+- Start time: {start_time} (~{start_hour}:00)
+- Vibe: {vibe}
+- Must include: {must_include if must_include else "flexible"}
+- Budget: {budget}
+
+Search results to use:
+{json.dumps(search_results)[:2500]}
+
+Create a timeline for their day. Output JSON:
+{{
+  "greeting": "Excited greeting about their day!",
+  "day_title": "Title for their day (e.g., 'Your Chill Saturday')",
+  "timeline": [
+    {{
+      "time": "10:00 AM",
+      "emoji": "☕",
+      "activity": "Activity name",
+      "place": "Specific place name",
+      "details": "Why this fits their vibe",
+      "google_query": "search for maps"
+    }}
+  ],
+  "total_budget_estimate": "₹X - ₹Y",
+  "tips": ["Any helpful tips"],
+  "closing": "Friendly send-off"
+}}
+
+Rules:
+- Use REAL places from search results
+- Space activities 2-3 hours apart
+- Include lunch and dinner if appropriate
+- Match the {vibe} vibe exactly
+"""
+    
+    try:
+        raw_response = ask_gemini(day_prompt)
+        response = json.loads(raw_response.strip())
+        response['type'] = 'day_plan'
+        return jsonify(response)
+    except Exception as e:
+        print(f"❌ Day plan generation error: {e}")
+        return jsonify({
+            "type": "day_plan",
+            "greeting": "Here's your day!",
+            "timeline": [],
+            "closing": "Have a great time!"
+        })
 
 
 # ==================================================
