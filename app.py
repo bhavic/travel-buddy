@@ -453,13 +453,16 @@ def get_options():
 
 @app.route('/api/wizard/movies', methods=['POST'])
 def wizard_movies():
-    """Returns movies with showtimes for the wizard flow using real nearby theaters."""
+    """Returns movies with showtimes using Google Places for theaters and Tavily for movies."""
     try:
         data = request.json
         timing = data.get('timing', 'now')
         city = data.get('city', 'Gurgaon')
         lat = data.get('lat')
         lng = data.get('lng')
+        
+        current_date = datetime.now()
+        today_str = current_date.strftime("%B %d, %Y")  # e.g., "January 27, 2026"
         
         print(f"🎬 Wizard: Fetching movies for {city}, timing={timing}, coords=({lat},{lng})")
         
@@ -469,7 +472,7 @@ def wizard_movies():
             theaters = get_nearby_theaters(float(lat), float(lng))
             print(f"📍 Found {len(theaters)} nearby theaters")
         
-        # If no theaters found via API, use city-based defaults
+        # Fallback theaters if API fails
         if not theaters:
             theaters = [
                 {"name": f"PVR {city}", "address": city},
@@ -477,48 +480,61 @@ def wizard_movies():
                 {"name": f"Cinepolis {city}", "address": city}
             ]
         
-        # Step 2: Get current movies from TMDB
-        tmdb_movies = get_tmdb_now_playing()
+        # Step 2: Search for movies at each theater using Tavily
+        movies_data = {}  # movie_title -> {rating, showtimes: [{time, theater}]}
         
-        # Step 3: Combine movies with nearby theaters
+        if tavily:
+            for theater in theaters[:3]:  # Top 3 theaters
+                theater_name = theater.get('name', 'Theater')
+                try:
+                    # Search for movies at this specific theater
+                    query = f"movies showtimes {theater_name} {city} today {today_str}"
+                    print(f"🔍 Searching: {query}")
+                    
+                    results = tavily.search(query=query, max_results=3)
+                    
+                    # Parse movie titles and times from results
+                    for result in results.get('results', []):
+                        content = result.get('content', '') + result.get('title', '')
+                        
+                        # Extract potential movie titles (simplified)
+                        for word_group in content.split('.'):
+                            # Look for time patterns
+                            times = re.findall(r'(\d{1,2}:\d{2}\s*[APap][Mm]|\d{1,2}\s*[APap][Mm])', word_group)
+                            if times:
+                                # Try to get movie name from this sentence
+                                title_match = word_group.strip()[:40]
+                                if title_match and len(title_match) > 5:
+                                    if title_match not in movies_data:
+                                        movies_data[title_match] = {
+                                            "rating": "8.0",
+                                            "showtimes": []
+                                        }
+                                    for t in times[:2]:
+                                        movies_data[title_match]["showtimes"].append({
+                                            "time": t,
+                                            "theater": theater_name
+                                        })
+                except Exception as e:
+                    print(f"⚠️ Search error for {theater_name}: {e}")
+        
+        # Step 3: Format response
         movies = []
+        for title, info in list(movies_data.items())[:6]:
+            movies.append({
+                "title": title,
+                "rating": info["rating"],
+                "genre": "Now Playing",
+                "showtimes": info["showtimes"][:4]
+            })
         
-        if tmdb_movies:
-            for movie_data in tmdb_movies[:6]:
-                # Generate showtimes at real nearby theaters
-                showtimes = []
-                base_times = ['4:30 PM', '6:00 PM', '7:45 PM', '9:30 PM']
-                
-                for i, theater in enumerate(theaters[:3]):  # Top 3 theaters
-                    time_idx = i % len(base_times)
-                    showtimes.append({
-                        "time": base_times[time_idx],
-                        "theater": theater.get('name', 'Unknown Theater'),
-                        "address": theater.get('address', '')
-                    })
-                    # Add a second showtime for first theater
-                    if i == 0 and len(base_times) > time_idx + 1:
-                        showtimes.append({
-                            "time": base_times[time_idx + 1],
-                            "theater": theater.get('name', 'Unknown Theater'),
-                            "address": theater.get('address', '')
-                        })
-                
-                movies.append({
-                    "title": movie_data.get('title', 'Unknown'),
-                    "rating": str(movie_data.get('subtitle', '⭐ 7.5')).split('⭐')[1].split(' ')[0] if '⭐' in str(movie_data.get('subtitle', '')) else '7.5',
-                    "genre": "Now Playing",
-                    "showtimes": showtimes[:4]
-                })
-        
-        # Fallback: Ask user to type movie
+        # Fallback: Show theaters and ask user to type movie
         if not movies:
-            # At least show theater options
             movies = [{
                 "title": "🔍 Type your movie below",
                 "rating": "-",
-                "genre": "We found these theaters near you:",
-                "showtimes": [{"time": "Various", "theater": t.get('name', 'Theater')} for t in theaters[:3]]
+                "genre": "Theaters near you:",
+                "showtimes": [{"time": "Check on BookMyShow", "theater": t.get('name', 'Theater')} for t in theaters[:3]]
             }]
         
         return jsonify({
