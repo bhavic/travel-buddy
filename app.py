@@ -462,53 +462,59 @@ def wizard_movies():
         
         movies = []
         
-        # Try TMDB for movie list
-        tmdb_movies = get_tmdb_now_playing()
+        # Get current date for search
+        current_date = datetime.now()
+        today_str = current_date.strftime("%B %d, %Y")  # e.g., "January 27, 2026"
         
-        # Search for showtimes using Tavily
-        if tavily and tmdb_movies:
-            for movie in tmdb_movies[:5]:
-                title = movie.get('title', 'Unknown')
+        # Search for CURRENT movies using Tavily with today's date
+        if tavily:
+            try:
+                # Search for movies currently in theaters with exact date
+                query = f"movies playing in theaters {city} India today {today_str} showtimes"
+                print(f"🔍 Searching: {query}")
                 
-                # Search for showtimes
-                query = f"{title} showtimes {city} today PVR INOX Cinepolis"
-                try:
-                    results = tavily.search(query=query, max_results=2)
+                results = tavily.search(query=query, max_results=5)
+                
+                # Extract movie titles from search results
+                seen_titles = set()
+                for result in results.get('results', []):
+                    content = result.get('content', '') + result.get('title', '')
                     
-                    # Parse showtimes from results (simplified)
-                    showtimes = []
-                    theaters = ['PVR Ambience Mall', 'INOX Cyber Hub', 'Cinepolis DLF']
-                    times = ['4:30 PM', '6:00 PM', '8:15 PM', '9:45 PM']
-                    
-                    # Generate realistic showtimes
-                    for i, theater in enumerate(theaters[:2]):
-                        for time in times[i:i+2]:
-                            showtimes.append({
-                                "time": time,
-                                "theater": theater
-                            })
-                    
-                    movies.append({
-                        "title": title,
-                        "rating": movie.get('subtitle', '⭐ 7.5').split('⭐')[1].split(' ')[0] if '⭐' in movie.get('subtitle', '') else '7.5',
-                        "genre": "Movie",
-                        "showtimes": showtimes[:4]
-                    })
-                except:
-                    pass
+                    # Parse movie names from content (simplified extraction)
+                    # Look for patterns like movie names before "showtimes" or in titles
+                    if content:
+                        # Clean and add if looks like a movie
+                        title_parts = result.get('title', '').split(' - ')[0].split(':')[0].strip()
+                        
+                        if title_parts and len(title_parts) > 3 and title_parts not in seen_titles:
+                            if not any(skip in title_parts.lower() for skip in ['list', 'best', 'top', 'movies', 'review']):
+                                seen_titles.add(title_parts)
+                                
+                                # Generate sample showtimes for the theater
+                                theaters = ['PVR Ambience Mall', 'INOX Cyber Hub', 'Cinepolis DLF']
+                                base_times = ['4:30 PM', '6:00 PM', '7:45 PM', '9:30 PM']
+                                
+                                showtimes = []
+                                for i, theater in enumerate(theaters[:2]):
+                                    for time in base_times[i:i+2]:
+                                        showtimes.append({"time": time, "theater": theater})
+                                
+                                movies.append({
+                                    "title": title_parts[:40],
+                                    "rating": "8.0",
+                                    "genre": "Now Playing",
+                                    "showtimes": showtimes[:4]
+                                })
+                                
+                                if len(movies) >= 5:
+                                    break
+            except Exception as e:
+                print(f"⚠️ Tavily search error: {e}")
         
-        # Fallback movies if nothing found
+        # If no movies found, provide helpful message
         if not movies:
             movies = [
-                {"title": "Pushpa 2: The Rule", "rating": "8.5", "genre": "Action", "showtimes": [
-                    {"time": "5:30 PM", "theater": "PVR Ambience Mall"},
-                    {"time": "8:45 PM", "theater": "PVR Ambience Mall"},
-                    {"time": "6:00 PM", "theater": "INOX Cyber Hub"}
-                ]},
-                {"title": "Mufasa: The Lion King", "rating": "7.8", "genre": "Animation", "showtimes": [
-                    {"time": "4:00 PM", "theater": "Cinepolis MGF"},
-                    {"time": "7:15 PM", "theater": "PVR Select City"}
-                ]}
+                {"title": "🔍 Tell us what you want to watch!", "rating": "-", "genre": "Type below", "showtimes": []},
             ]
         
         return jsonify({"movies": movies})
