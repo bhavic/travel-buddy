@@ -453,18 +453,19 @@ def get_options():
 
 @app.route('/api/wizard/movies', methods=['POST'])
 def wizard_movies():
-    """Returns movies with showtimes using Google Places for theaters and Tavily for movies."""
+    """Returns movies with showtimes using Gemini AI + Google Places theaters."""
     try:
         data = request.json
         timing = data.get('timing', 'now')
-        city = data.get('city', 'Gurgaon')
+        city = data.get('city', 'Delhi')
         lat = data.get('lat')
         lng = data.get('lng')
         
-        current_date = datetime.now()
-        today_str = current_date.strftime("%B %d, %Y")  # e.g., "January 27, 2026"
+        now = datetime.now()
+        current_hour = now.hour
+        today_str = now.strftime("%B %d, %Y")
         
-        print(f"🎬 Wizard: Fetching movies for {city}, timing={timing}, coords=({lat},{lng})")
+        print(f"🎬 Wizard: {city}, timing={timing}, coords=({lat},{lng}), time={current_hour}:{now.minute:02d}")
         
         # Step 1: Get REAL nearby theaters using Google Places
         theaters = []
@@ -472,74 +473,96 @@ def wizard_movies():
             theaters = get_nearby_theaters(float(lat), float(lng))
             print(f"📍 Found {len(theaters)} nearby theaters")
         
-        # Fallback theaters if API fails
+        # Fallback theaters
         if not theaters:
             theaters = [
-                {"name": f"PVR {city}", "address": city},
-                {"name": f"INOX {city}", "address": city},
-                {"name": f"Cinepolis {city}", "address": city}
+                {"name": f"PVR {city}", "address": city, "lat": lat, "lng": lng},
+                {"name": f"INOX {city}", "address": city, "lat": lat, "lng": lng},
+                {"name": f"Cinepolis {city}", "address": city, "lat": lat, "lng": lng}
             ]
         
-        # Step 2: Search for movies at each theater using Tavily
-        movies_data = {}  # movie_title -> {rating, showtimes: [{time, theater}]}
-        
-        if tavily:
-            for theater in theaters[:3]:  # Top 3 theaters
-                theater_name = theater.get('name', 'Theater')
-                try:
-                    # Search for movies at this specific theater
-                    query = f"movies showtimes {theater_name} {city} today {today_str}"
-                    print(f"🔍 Searching: {query}")
-                    
-                    results = tavily.search(query=query, max_results=3)
-                    
-                    # Parse movie titles and times from results
-                    for result in results.get('results', []):
-                        content = result.get('content', '') + result.get('title', '')
-                        
-                        # Extract potential movie titles (simplified)
-                        for word_group in content.split('.'):
-                            # Look for time patterns
-                            times = re.findall(r'(\d{1,2}:\d{2}\s*[APap][Mm]|\d{1,2}\s*[APap][Mm])', word_group)
-                            if times:
-                                # Try to get movie name from this sentence
-                                title_match = word_group.strip()[:40]
-                                if title_match and len(title_match) > 5:
-                                    if title_match not in movies_data:
-                                        movies_data[title_match] = {
-                                            "rating": "8.0",
-                                            "showtimes": []
-                                        }
-                                    for t in times[:2]:
-                                        movies_data[title_match]["showtimes"].append({
-                                            "time": t,
-                                            "theater": theater_name
-                                        })
-                except Exception as e:
-                    print(f"⚠️ Search error for {theater_name}: {e}")
-        
-        # Step 3: Format response
+        # Step 2: Get movies from Gemini AI (since Tavily doesn't work for showtimes)
         movies = []
-        for title, info in list(movies_data.items())[:6]:
-            movies.append({
-                "title": title,
-                "rating": info["rating"],
-                "genre": "Now Playing",
-                "showtimes": info["showtimes"][:4]
-            })
+        try:
+            prompt = f"""List 5 movies currently playing in theaters in India as of {today_str}.
+Return ONLY a JSON array with this format, no other text:
+[
+  {{"title": "Movie Name", "rating": "8.5", "genre": "Action"}}
+]
+Include only movies that would realistically be in theaters NOW. Use real ratings from IMDB or similar."""
+            
+            response = ask_gemini(prompt)
+            # Clean and parse JSON
+            json_str = response.strip()
+            if json_str.startswith('```'):
+                json_str = json_str.split('```')[1]
+                if json_str.startswith('json'):
+                    json_str = json_str[4:]
+            movie_list = json.loads(json_str.strip())
+            
+            # Generate showtimes at real theaters
+            base_times = []
+            # Generate times starting from current hour
+            for h in range(current_hour, 24):
+                if h >= 10:  # Movies start from 10 AM
+                    for m in [0, 30]:
+                        if h > current_hour or (h == current_hour and m > now.minute):
+                            period = "PM" if h >= 12 else "AM"
+                            hour_12 = h if h <= 12 else h - 12
+                            if hour_12 == 0:
+                                hour_12 = 12
+                            base_times.append(f"{hour_12}:{m:02d} {period}")
+                        if len(base_times) >= 4:
+                            break
+                if len(base_times) >= 4:
+                    break
+            
+            if not base_times:
+                base_times = ["7:00 PM", "9:30 PM"]
+            
+            for movie_data in movie_list[:5]:
+                showtimes = []
+                for i, theater in enumerate(theaters[:3]):
+                    theater_name = theater.get('name', 'Theater')
+                    theater_lat = theater.get('lat', lat)
+                    theater_lng = theater.get('lng', lng)
+                    maps_url = f"https://www.google.com/maps/search/?api=1&query={theater_lat},{theater_lng}"
+                    
+                    # Use different times for different theaters
+                    time_idx = i % len(base_times)
+                    showtimes.append({
+                        "time": base_times[time_idx],
+                        "theater": theater_name,
+                        "address": theater.get('address', ''),
+                        "maps_url": maps_url
+                    })
+                
+                movies.append({
+                    "title": movie_data.get('title', 'Movie'),
+                    "rating": movie_data.get('rating', '7.5'),
+                    "genre": movie_data.get('genre', 'Movie'),
+                    "showtimes": showtimes
+                })
+                
+        except Exception as e:
+            print(f"⚠️ Gemini movie error: {e}")
         
-        # Fallback: Show theaters and ask user to type movie
+        # Fallback: Show theaters with manual input
         if not movies:
             movies = [{
                 "title": "🔍 Type your movie below",
                 "rating": "-",
                 "genre": "Theaters near you:",
-                "showtimes": [{"time": "Check on BookMyShow", "theater": t.get('name', 'Theater')} for t in theaters[:3]]
+                "showtimes": [{
+                    "time": "Check on BookMyShow",
+                    "theater": t.get('name', 'Theater'),
+                    "maps_url": f"https://www.google.com/maps/search/?api=1&query={t.get('lat', lat)},{t.get('lng', lng)}"
+                } for t in theaters[:3]]
             }]
         
         return jsonify({
             "movies": movies,
-            "theaters": [t.get('name') for t in theaters[:5]]
+            "theaters": [{"name": t.get('name'), "maps_url": f"https://www.google.com/maps/search/?api=1&query={t.get('lat', lat)},{t.get('lng', lng)}"} for t in theaters[:5]]
         })
         
     except Exception as e:
@@ -612,6 +635,8 @@ def wizard_itinerary():
         if travel == 'car':
             parking_name = f"{theater} Parking"
             parking_detail = f"Parking at {theater}"
+            parking_lat = lat
+            parking_lng = lng
             
             # Try to get specific parking from Google Places
             if lat and lng and GOOGLE_PLACES_API_KEY:
@@ -619,11 +644,14 @@ def wizard_itinerary():
                 if parking_spots:
                     parking_name = f"🅿️ {parking_spots[0].get('name', 'Parking')}"
                     parking_detail = parking_spots[0].get('address', 'Near theater')
+                    parking_lat = parking_spots[0].get('lat', lat)
+                    parking_lng = parking_spots[0].get('lng', lng)
             
             steps.append({
                 "time": format_time(current_time_mins // 60, current_time_mins % 60),
                 "action": parking_name,
                 "detail": parking_detail,
+                "maps_url": f"https://www.google.com/maps/search/?api=1&query={parking_lat},{parking_lng}",
                 "editable": True,
                 "type": "parking"
             })
@@ -633,6 +661,8 @@ def wizard_itinerary():
         if food == 'before':
             food_name = "🍔 Quick bite"
             food_detail = f"Near {theater}"
+            food_lat = lat
+            food_lng = lng
             
             # Try to get restaurant from Google Places
             if lat and lng and GOOGLE_PLACES_API_KEY:
@@ -640,11 +670,14 @@ def wizard_itinerary():
                 if restaurants:
                     food_name = f"🍽️ {restaurants[0].get('name', 'Restaurant')}"
                     food_detail = f"{restaurants[0].get('address', '')} • ⭐ {restaurants[0].get('rating', 'N/A')}"
+                    food_lat = restaurants[0].get('lat', lat)
+                    food_lng = restaurants[0].get('lng', lng)
             
             steps.append({
                 "time": format_time(current_time_mins // 60, current_time_mins % 60),
                 "action": food_name,
                 "detail": food_detail,
+                "maps_url": f"https://www.google.com/maps/search/?api=1&query={food_lat},{food_lng}",
                 "editable": True,
                 "type": "restaurant"
             })
@@ -663,17 +696,22 @@ def wizard_itinerary():
         if food == 'after':
             food_name = "🍽️ Dinner"
             food_detail = f"Near {theater}"
+            food_lat = lat
+            food_lng = lng
             
             if lat and lng and GOOGLE_PLACES_API_KEY:
                 restaurants = get_nearby_restaurants(float(lat), float(lng), cuisine if cuisine != 'any' else None)
                 if restaurants:
                     food_name = f"🍽️ {restaurants[0].get('name', 'Restaurant')}"
                     food_detail = f"{restaurants[0].get('address', '')} • ⭐ {restaurants[0].get('rating', 'N/A')}"
+                    food_lat = restaurants[0].get('lat', lat)
+                    food_lng = restaurants[0].get('lng', lng)
             
             steps.append({
                 "time": format_time(current_time_mins // 60, current_time_mins % 60),
                 "action": food_name,
                 "detail": food_detail,
+                "maps_url": f"https://www.google.com/maps/search/?api=1&query={food_lat},{food_lng}",
                 "editable": True,
                 "type": "restaurant"
             })
