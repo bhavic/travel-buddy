@@ -46,6 +46,7 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 TAVILY_API_KEY = os.environ.get("TAVILY_API_KEY")
 OPENWEATHER_API_KEY = os.environ.get("OPENWEATHER_API_KEY")  # Free tier
 TMDB_API_KEY = os.environ.get("TMDB_API_KEY")  # Free tier
+GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY")  # For theaters/restaurants
 
 # In-memory user preferences store (persists during server lifetime)
 # For production, use Redis or a database
@@ -452,76 +453,82 @@ def get_options():
 
 @app.route('/api/wizard/movies', methods=['POST'])
 def wizard_movies():
-    """Returns movies with showtimes for the wizard flow."""
+    """Returns movies with showtimes for the wizard flow using real nearby theaters."""
     try:
         data = request.json
         timing = data.get('timing', 'now')
         city = data.get('city', 'Gurgaon')
+        lat = data.get('lat')
+        lng = data.get('lng')
         
-        print(f"🎬 Wizard: Fetching movies for {city}, timing={timing}")
+        print(f"🎬 Wizard: Fetching movies for {city}, timing={timing}, coords=({lat},{lng})")
         
-        movies = []
+        # Step 1: Get REAL nearby theaters using Google Places
+        theaters = []
+        if lat and lng and GOOGLE_PLACES_API_KEY:
+            theaters = get_nearby_theaters(float(lat), float(lng))
+            print(f"📍 Found {len(theaters)} nearby theaters")
         
-        # Get current date for search
-        current_date = datetime.now()
-        today_str = current_date.strftime("%B %d, %Y")  # e.g., "January 27, 2026"
-        
-        # Search for CURRENT movies using Tavily with today's date
-        if tavily:
-            try:
-                # Search for movies currently in theaters with exact date
-                query = f"movies playing in theaters {city} India today {today_str} showtimes"
-                print(f"🔍 Searching: {query}")
-                
-                results = tavily.search(query=query, max_results=5)
-                
-                # Extract movie titles from search results
-                seen_titles = set()
-                for result in results.get('results', []):
-                    content = result.get('content', '') + result.get('title', '')
-                    
-                    # Parse movie names from content (simplified extraction)
-                    # Look for patterns like movie names before "showtimes" or in titles
-                    if content:
-                        # Clean and add if looks like a movie
-                        title_parts = result.get('title', '').split(' - ')[0].split(':')[0].strip()
-                        
-                        if title_parts and len(title_parts) > 3 and title_parts not in seen_titles:
-                            if not any(skip in title_parts.lower() for skip in ['list', 'best', 'top', 'movies', 'review']):
-                                seen_titles.add(title_parts)
-                                
-                                # Generate sample showtimes for the theater
-                                theaters = ['PVR Ambience Mall', 'INOX Cyber Hub', 'Cinepolis DLF']
-                                base_times = ['4:30 PM', '6:00 PM', '7:45 PM', '9:30 PM']
-                                
-                                showtimes = []
-                                for i, theater in enumerate(theaters[:2]):
-                                    for time in base_times[i:i+2]:
-                                        showtimes.append({"time": time, "theater": theater})
-                                
-                                movies.append({
-                                    "title": title_parts[:40],
-                                    "rating": "8.0",
-                                    "genre": "Now Playing",
-                                    "showtimes": showtimes[:4]
-                                })
-                                
-                                if len(movies) >= 5:
-                                    break
-            except Exception as e:
-                print(f"⚠️ Tavily search error: {e}")
-        
-        # If no movies found, provide helpful message
-        if not movies:
-            movies = [
-                {"title": "🔍 Tell us what you want to watch!", "rating": "-", "genre": "Type below", "showtimes": []},
+        # If no theaters found via API, use city-based defaults
+        if not theaters:
+            theaters = [
+                {"name": f"PVR {city}", "address": city},
+                {"name": f"INOX {city}", "address": city},
+                {"name": f"Cinepolis {city}", "address": city}
             ]
         
-        return jsonify({"movies": movies})
+        # Step 2: Get current movies from TMDB
+        tmdb_movies = get_tmdb_now_playing()
+        
+        # Step 3: Combine movies with nearby theaters
+        movies = []
+        
+        if tmdb_movies:
+            for movie_data in tmdb_movies[:6]:
+                # Generate showtimes at real nearby theaters
+                showtimes = []
+                base_times = ['4:30 PM', '6:00 PM', '7:45 PM', '9:30 PM']
+                
+                for i, theater in enumerate(theaters[:3]):  # Top 3 theaters
+                    time_idx = i % len(base_times)
+                    showtimes.append({
+                        "time": base_times[time_idx],
+                        "theater": theater.get('name', 'Unknown Theater'),
+                        "address": theater.get('address', '')
+                    })
+                    # Add a second showtime for first theater
+                    if i == 0 and len(base_times) > time_idx + 1:
+                        showtimes.append({
+                            "time": base_times[time_idx + 1],
+                            "theater": theater.get('name', 'Unknown Theater'),
+                            "address": theater.get('address', '')
+                        })
+                
+                movies.append({
+                    "title": movie_data.get('title', 'Unknown'),
+                    "rating": str(movie_data.get('subtitle', '⭐ 7.5')).split('⭐')[1].split(' ')[0] if '⭐' in str(movie_data.get('subtitle', '')) else '7.5',
+                    "genre": "Now Playing",
+                    "showtimes": showtimes[:4]
+                })
+        
+        # Fallback: Ask user to type movie
+        if not movies:
+            # At least show theater options
+            movies = [{
+                "title": "🔍 Type your movie below",
+                "rating": "-",
+                "genre": "We found these theaters near you:",
+                "showtimes": [{"time": "Various", "theater": t.get('name', 'Theater')} for t in theaters[:3]]
+            }]
+        
+        return jsonify({
+            "movies": movies,
+            "theaters": [t.get('name') for t in theaters[:5]]
+        })
         
     except Exception as e:
         print(f"❌ Wizard Movies Error: {e}")
-        return jsonify({"movies": []})
+        return jsonify({"movies": [], "theaters": []})
 
 
 @app.route('/api/wizard/itinerary', methods=['POST'])
@@ -747,6 +754,73 @@ def get_weather(city, country_code="IN"):
     except Exception as e:
         print(f"⚠️ Weather fetch failed: {e}")
     return None
+
+
+# ==================================================
+# GOOGLE PLACES API (Theaters & Restaurants)
+# ==================================================
+
+def google_nearby_search(lat, lng, place_type, keyword=None, radius=5000):
+    """
+    Searches for nearby places using Google Places API.
+    place_type: 'movie_theater', 'restaurant', 'parking', etc.
+    Returns list of places with name, address, rating, location.
+    """
+    if not GOOGLE_PLACES_API_KEY:
+        print("⚠️ Google Places API key not configured")
+        return []
+    
+    try:
+        url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+        params = {
+            "location": f"{lat},{lng}",
+            "radius": radius,
+            "type": place_type,
+            "key": GOOGLE_PLACES_API_KEY
+        }
+        if keyword:
+            params["keyword"] = keyword
+        
+        response = requests.get(url, params=params, timeout=10)
+        data = response.json()
+        
+        if data.get("status") == "OK":
+            places = []
+            for place in data.get("results", [])[:10]:
+                places.append({
+                    "name": place.get("name"),
+                    "address": place.get("vicinity"),
+                    "rating": place.get("rating", "N/A"),
+                    "lat": place["geometry"]["location"]["lat"],
+                    "lng": place["geometry"]["location"]["lng"],
+                    "place_id": place.get("place_id"),
+                    "open_now": place.get("opening_hours", {}).get("open_now", True)
+                })
+            print(f"✅ Google Places: Found {len(places)} {place_type}s")
+            return places
+        else:
+            print(f"⚠️ Google Places error: {data.get('status')}")
+            
+    except Exception as e:
+        print(f"❌ Google Places failed: {e}")
+    
+    return []
+
+
+def get_nearby_theaters(lat, lng):
+    """Gets movie theaters near the user's location."""
+    return google_nearby_search(lat, lng, "movie_theater")
+
+
+def get_nearby_restaurants(lat, lng, cuisine=None):
+    """Gets restaurants near a location, optionally filtered by cuisine."""
+    keyword = cuisine if cuisine else None
+    return google_nearby_search(lat, lng, "restaurant", keyword=keyword)
+
+
+def get_nearby_parking(lat, lng):
+    """Gets parking options near a location."""
+    return google_nearby_search(lat, lng, "parking", radius=1000)
 
 
 # ==================================================
