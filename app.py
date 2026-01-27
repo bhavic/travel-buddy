@@ -549,62 +549,167 @@ def wizard_movies():
 
 @app.route('/api/wizard/itinerary', methods=['POST'])
 def wizard_itinerary():
-    """Generates a complete itinerary with parking from wizard selections."""
+    """Generates a complete itinerary with specific parking from Google Places."""
     try:
         data = request.json
         movie = data.get('movie', 'Movie')
-        showtime = data.get('showtime', '6:00 PM')
-        theater = data.get('theater', 'PVR')
+        showtime = data.get('showtime', '7:00 PM')
+        theater = data.get('theater', 'Theater')
         food = data.get('food', 'skip')
         cuisine = data.get('cuisine', 'any')
         travel = data.get('travel', 'car')
-        city = data.get('city', 'Gurgaon')
+        city = data.get('city', 'Delhi')
+        lat = data.get('lat')
+        lng = data.get('lng')
         
-        print(f"📝 Wizard: Generating itinerary - {movie} at {theater} {showtime}")
+        # Get CURRENT time for planning
+        now = datetime.now()
+        current_hour = now.hour
+        current_minute = now.minute
         
-        # Build intelligent itinerary
-        prompt = f"""
-Create a JSON itinerary for:
-- Movie: {movie} at {theater}, {showtime}
-- Food preference: {food} ({cuisine})
-- Travel: {travel}
-- City: {city}
-
-Return JSON:
-{{
-  "steps": [
-    {{"time": "5:00 PM", "action": "🚗 Leave from home", "detail": "Drive to {theater}", "editable": false}},
-    {{"time": "5:20 PM", "action": "🅿️ Park at venue", "detail": "Parking details", "editable": true, "type": "parking"}},
-    ...
-  ],
-  "duration": "~X hours",
-  "cost": "₹XXXX estimated"
-}}
-
-Include:
-- Parking step if travel=car (with real parking info for {theater})
-- Food step if food!=skip (recommend a real restaurant near {theater})
-- Proper timing based on showtime
-- Return home step
-
-Output ONLY valid JSON.
-"""
+        print(f"📝 Wizard: Generating itinerary - {movie} at {theater} {showtime}, current time: {current_hour}:{current_minute:02d}")
         
-        response = ask_gemini(prompt)
-        result = json.loads(response.strip())
-        return jsonify(result)
+        # Parse showtime to calculate travel time
+        try:
+            show_hour = int(showtime.split(':')[0])
+            if 'PM' in showtime.upper() and show_hour != 12:
+                show_hour += 12
+        except:
+            show_hour = 19  # Default to 7 PM
+        
+        # Calculate start time (30 mins before showtime for travel)
+        start_hour = show_hour - 1 if show_hour > current_hour else current_hour
+        start_minute = 0
+        
+        # If show is in the past or too soon, adjust
+        if show_hour <= current_hour:
+            start_hour = current_hour
+            start_minute = (current_minute // 15 + 1) * 15  # Round up to next 15 min
+            if start_minute >= 60:
+                start_hour += 1
+                start_minute = 0
+        
+        def format_time(h, m):
+            period = "PM" if h >= 12 else "AM"
+            hour_12 = h if h <= 12 else h - 12
+            if hour_12 == 0:
+                hour_12 = 12
+            return f"{hour_12}:{m:02d} {period}"
+        
+        steps = []
+        current_time_mins = start_hour * 60 + start_minute
+        
+        # Step 1: Leave from home
+        steps.append({
+            "time": format_time(start_hour, start_minute),
+            "action": "🚗 Leave from home",
+            "detail": f"Head to {theater}, {city}",
+            "editable": False
+        })
+        current_time_mins += 25  # 25 min travel
+        
+        # Step 2: Parking (specific from Google Places)
+        if travel == 'car':
+            parking_name = f"{theater} Parking"
+            parking_detail = f"Parking at {theater}"
+            
+            # Try to get specific parking from Google Places
+            if lat and lng and GOOGLE_PLACES_API_KEY:
+                parking_spots = get_nearby_parking(float(lat), float(lng))
+                if parking_spots:
+                    parking_name = f"🅿️ {parking_spots[0].get('name', 'Parking')}"
+                    parking_detail = parking_spots[0].get('address', 'Near theater')
+            
+            steps.append({
+                "time": format_time(current_time_mins // 60, current_time_mins % 60),
+                "action": parking_name,
+                "detail": parking_detail,
+                "editable": True,
+                "type": "parking"
+            })
+            current_time_mins += 10  # 10 min to park and walk
+        
+        # Step 3: Food (before movie if selected)
+        if food == 'before':
+            food_name = "🍔 Quick bite"
+            food_detail = f"Near {theater}"
+            
+            # Try to get restaurant from Google Places
+            if lat and lng and GOOGLE_PLACES_API_KEY:
+                restaurants = get_nearby_restaurants(float(lat), float(lng), cuisine if cuisine != 'any' else None)
+                if restaurants:
+                    food_name = f"🍽️ {restaurants[0].get('name', 'Restaurant')}"
+                    food_detail = f"{restaurants[0].get('address', '')} • ⭐ {restaurants[0].get('rating', 'N/A')}"
+            
+            steps.append({
+                "time": format_time(current_time_mins // 60, current_time_mins % 60),
+                "action": food_name,
+                "detail": food_detail,
+                "editable": True,
+                "type": "restaurant"
+            })
+            current_time_mins += 30  # 30 min to eat
+        
+        # Step 4: Movie
+        steps.append({
+            "time": showtime,
+            "action": f"🎬 {movie}",
+            "detail": theater,
+            "editable": False
+        })
+        current_time_mins = show_hour * 60 + 150  # ~2.5 hours for movie
+        
+        # Step 5: Food (after movie if selected)
+        if food == 'after':
+            food_name = "🍽️ Dinner"
+            food_detail = f"Near {theater}"
+            
+            if lat and lng and GOOGLE_PLACES_API_KEY:
+                restaurants = get_nearby_restaurants(float(lat), float(lng), cuisine if cuisine != 'any' else None)
+                if restaurants:
+                    food_name = f"🍽️ {restaurants[0].get('name', 'Restaurant')}"
+                    food_detail = f"{restaurants[0].get('address', '')} • ⭐ {restaurants[0].get('rating', 'N/A')}"
+            
+            steps.append({
+                "time": format_time(current_time_mins // 60, current_time_mins % 60),
+                "action": food_name,
+                "detail": food_detail,
+                "editable": True,
+                "type": "restaurant"
+            })
+            current_time_mins += 45  # 45 min to eat
+        
+        # Step 6: Head home
+        steps.append({
+            "time": format_time(current_time_mins // 60, current_time_mins % 60),
+            "action": "🏠 Head home",
+            "detail": "End of plan",
+            "editable": False
+        })
+        
+        # Calculate total duration
+        total_mins = current_time_mins - (start_hour * 60 + start_minute)
+        hours = total_mins // 60
+        mins = total_mins % 60
+        duration = f"~{hours}h {mins}m" if mins else f"~{hours} hours"
+        
+        return jsonify({
+            "steps": steps,
+            "duration": duration,
+            "cost": "₹1,200 estimated"
+        })
         
     except Exception as e:
         print(f"❌ Wizard Itinerary Error: {e}")
-        # Fallback itinerary
+        # Better fallback with current time
+        now = datetime.now()
         return jsonify({
             "steps": [
-                {"time": "5:00 PM", "action": "🚗 Leave from home", "detail": f"Head to {data.get('theater', 'theater')}", "editable": False},
-                {"time": "5:25 PM", "action": "🅿️ Park at mall", "detail": "Basement parking available", "editable": True, "type": "parking"},
-                {"time": data.get('showtime', '6:00 PM'), "action": f"🎬 {data.get('movie', 'Movie')}", "detail": data.get('theater', 'Theater'), "editable": False},
-                {"time": "9:00 PM", "action": "🏠 Head home", "detail": "End of plan", "editable": False}
+                {"time": f"{now.hour}:{now.minute:02d}", "action": "🚗 Leave now", "detail": f"Head to {data.get('theater', 'theater')}", "editable": False},
+                {"time": data.get('showtime', '7:00 PM'), "action": f"🎬 {data.get('movie', 'Movie')}", "detail": data.get('theater', 'Theater'), "editable": False},
+                {"time": "After movie", "action": "🏠 Head home", "detail": "End of plan", "editable": False}
             ],
-            "duration": "~4 hours",
+            "duration": "~3 hours",
             "cost": "₹1,000 estimated"
         })
 
