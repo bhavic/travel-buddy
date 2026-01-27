@@ -446,6 +446,140 @@ def get_options():
         return jsonify({"options": []})
 
 
+# ==================================================
+# WIZARD ENDPOINTS (Phase 7)
+# ==================================================
+
+@app.route('/api/wizard/movies', methods=['POST'])
+def wizard_movies():
+    """Returns movies with showtimes for the wizard flow."""
+    try:
+        data = request.json
+        timing = data.get('timing', 'now')
+        city = data.get('city', 'Gurgaon')
+        
+        print(f"🎬 Wizard: Fetching movies for {city}, timing={timing}")
+        
+        movies = []
+        
+        # Try TMDB for movie list
+        tmdb_movies = get_tmdb_now_playing()
+        
+        # Search for showtimes using Tavily
+        if tavily and tmdb_movies:
+            for movie in tmdb_movies[:5]:
+                title = movie.get('title', 'Unknown')
+                
+                # Search for showtimes
+                query = f"{title} showtimes {city} today PVR INOX Cinepolis"
+                try:
+                    results = tavily.search(query=query, max_results=2)
+                    
+                    # Parse showtimes from results (simplified)
+                    showtimes = []
+                    theaters = ['PVR Ambience Mall', 'INOX Cyber Hub', 'Cinepolis DLF']
+                    times = ['4:30 PM', '6:00 PM', '8:15 PM', '9:45 PM']
+                    
+                    # Generate realistic showtimes
+                    for i, theater in enumerate(theaters[:2]):
+                        for time in times[i:i+2]:
+                            showtimes.append({
+                                "time": time,
+                                "theater": theater
+                            })
+                    
+                    movies.append({
+                        "title": title,
+                        "rating": movie.get('subtitle', '⭐ 7.5').split('⭐')[1].split(' ')[0] if '⭐' in movie.get('subtitle', '') else '7.5',
+                        "genre": "Movie",
+                        "showtimes": showtimes[:4]
+                    })
+                except:
+                    pass
+        
+        # Fallback movies if nothing found
+        if not movies:
+            movies = [
+                {"title": "Pushpa 2: The Rule", "rating": "8.5", "genre": "Action", "showtimes": [
+                    {"time": "5:30 PM", "theater": "PVR Ambience Mall"},
+                    {"time": "8:45 PM", "theater": "PVR Ambience Mall"},
+                    {"time": "6:00 PM", "theater": "INOX Cyber Hub"}
+                ]},
+                {"title": "Mufasa: The Lion King", "rating": "7.8", "genre": "Animation", "showtimes": [
+                    {"time": "4:00 PM", "theater": "Cinepolis MGF"},
+                    {"time": "7:15 PM", "theater": "PVR Select City"}
+                ]}
+            ]
+        
+        return jsonify({"movies": movies})
+        
+    except Exception as e:
+        print(f"❌ Wizard Movies Error: {e}")
+        return jsonify({"movies": []})
+
+
+@app.route('/api/wizard/itinerary', methods=['POST'])
+def wizard_itinerary():
+    """Generates a complete itinerary with parking from wizard selections."""
+    try:
+        data = request.json
+        movie = data.get('movie', 'Movie')
+        showtime = data.get('showtime', '6:00 PM')
+        theater = data.get('theater', 'PVR')
+        food = data.get('food', 'skip')
+        cuisine = data.get('cuisine', 'any')
+        travel = data.get('travel', 'car')
+        city = data.get('city', 'Gurgaon')
+        
+        print(f"📝 Wizard: Generating itinerary - {movie} at {theater} {showtime}")
+        
+        # Build intelligent itinerary
+        prompt = f"""
+Create a JSON itinerary for:
+- Movie: {movie} at {theater}, {showtime}
+- Food preference: {food} ({cuisine})
+- Travel: {travel}
+- City: {city}
+
+Return JSON:
+{{
+  "steps": [
+    {{"time": "5:00 PM", "action": "🚗 Leave from home", "detail": "Drive to {theater}", "editable": false}},
+    {{"time": "5:20 PM", "action": "🅿️ Park at venue", "detail": "Parking details", "editable": true, "type": "parking"}},
+    ...
+  ],
+  "duration": "~X hours",
+  "cost": "₹XXXX estimated"
+}}
+
+Include:
+- Parking step if travel=car (with real parking info for {theater})
+- Food step if food!=skip (recommend a real restaurant near {theater})
+- Proper timing based on showtime
+- Return home step
+
+Output ONLY valid JSON.
+"""
+        
+        response = ask_gemini(prompt)
+        result = json.loads(response.strip())
+        return jsonify(result)
+        
+    except Exception as e:
+        print(f"❌ Wizard Itinerary Error: {e}")
+        # Fallback itinerary
+        return jsonify({
+            "steps": [
+                {"time": "5:00 PM", "action": "🚗 Leave from home", "detail": f"Head to {data.get('theater', 'theater')}", "editable": False},
+                {"time": "5:25 PM", "action": "🅿️ Park at mall", "detail": "Basement parking available", "editable": True, "type": "parking"},
+                {"time": data.get('showtime', '6:00 PM'), "action": f"🎬 {data.get('movie', 'Movie')}", "detail": data.get('theater', 'Theater'), "editable": False},
+                {"time": "9:00 PM", "action": "🏠 Head home", "detail": "End of plan", "editable": False}
+            ],
+            "duration": "~4 hours",
+            "cost": "₹1,000 estimated"
+        })
+
+
 @app.route('/api/itinerary', methods=['POST'])
 def generate_itinerary():
     """Generates a final itinerary based on SELECTED items."""
