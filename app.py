@@ -885,7 +885,7 @@ def get_weather(city, country_code="IN"):
 def get_serpapi_movie_showtimes(location, date=None):
     """
     Fetches REAL movie showtimes from Google via SerpAPI.
-    Returns list of movies with theaters and showtimes.
+    Uses google engine with 'showtimes near [location]' query.
     """
     if not SERPAPI_KEY:
         print("⚠️ SerpAPI key not configured")
@@ -893,48 +893,52 @@ def get_serpapi_movie_showtimes(location, date=None):
     
     try:
         url = "https://serpapi.com/search"
+        
+        # Use google engine with showtimes query
+        query = f"showtimes near {location}"
+        
         params = {
-            "engine": "google_showtimes",
-            "location": location,
+            "engine": "google",
+            "q": query,
             "api_key": SERPAPI_KEY,
             "hl": "en",
-            "gl": "in"
+            "gl": "in",
+            "location": "India"
         }
-        if date:
-            params["date"] = date  # Format: YYYY-MM-DD
         
-        print(f"🎬 SerpAPI: Fetching showtimes for {location}")
+        print(f"🎬 SerpAPI: Searching '{query}'")
         response = requests.get(url, params=params, timeout=15)
         data = response.json()
         
         movies = []
+        
+        # SerpAPI returns showtimes in 'showtimes' key
         for movie in data.get("showtimes", [])[:8]:
-            movie_title = movie.get("name", "Unknown Movie")
-            movie_info = movie.get("info", {})
+            movie_title = movie.get("title", movie.get("name", "Unknown Movie"))
             
             # Get theaters and showtimes
             showtimes = []
             for theater in movie.get("theaters", [])[:3]:
                 theater_name = theater.get("name", "Theater")
-                theater_address = theater.get("address", "")
-                theater_link = theater.get("link", "")
+                theater_address = theater.get("address", theater.get("location", ""))
                 
-                for showtime in theater.get("shows", [])[:3]:
-                    showtimes.append({
-                        "time": showtime.get("time", ""),
-                        "theater": theater_name,
-                        "address": theater_address,
-                        "booking_link": showtime.get("link", theater_link),
-                        "type": showtime.get("type", "Standard")
-                    })
+                # Get show times for this theater
+                for show in theater.get("showing", [])[:4]:
+                    for time_slot in show.get("time", [])[:3]:
+                        showtimes.append({
+                            "time": time_slot if isinstance(time_slot, str) else time_slot.get("time", ""),
+                            "theater": theater_name,
+                            "address": theater_address,
+                            "type": show.get("type", "Standard")
+                        })
             
             if showtimes:
                 movies.append({
                     "title": movie_title,
-                    "rating": movie_info.get("rating", "N/A"),
-                    "genre": movie_info.get("genre", "Movie"),
-                    "duration": movie_info.get("duration", ""),
-                    "showtimes": showtimes
+                    "rating": movie.get("rating", "N/A"),
+                    "genre": movie.get("genre", "Movie"),
+                    "duration": movie.get("duration", movie.get("length", "")),
+                    "showtimes": showtimes[:6]
                 })
         
         print(f"✅ SerpAPI: Found {len(movies)} movies with showtimes")
