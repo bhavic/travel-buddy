@@ -462,44 +462,41 @@ def wizard_movies():
         lat = data.get('lat')
         lng = data.get('lng')
         
-        now = datetime.now()
-        today_date = now.strftime("%Y-%m-%d")
-        
         print(f"🎬 Wizard: {city}, timing={timing}, coords=({lat},{lng})")
+        
+        # STEP 1: Get nearby theaters from Google Places
+        theaters = []
+        if lat and lng and GOOGLE_PLACES_API_KEY:
+            theaters = get_nearby_theaters(float(lat), float(lng))
+            print(f"📍 Found {len(theaters)} nearby theaters")
+        
+        if not theaters:
+            theaters = [
+                {"name": f"PVR {city}", "address": city, "lat": lat, "lng": lng},
+                {"name": f"INOX {city}", "address": city, "lat": lat, "lng": lng}
+            ]
         
         movies = []
         
-        # STEP 1: Get REAL movie showtimes from SerpAPI
+        # STEP 2: Get movie showtimes from SerpAPI (search by theater)
         if SERPAPI_KEY:
-            # Use city or lat/lng for location
-            location = f"{lat},{lng}" if lat and lng else city
-            serpapi_movies = get_serpapi_movie_showtimes(location, today_date)
+            serpapi_movies = get_serpapi_movie_showtimes(city, theaters)
             
             if serpapi_movies:
                 # Add Google Maps URLs to each showtime
                 for movie in serpapi_movies:
                     for showtime in movie.get('showtimes', []):
                         address = showtime.get('address', '')
+                        theater = showtime.get('theater', '')
                         if address:
                             showtime['maps_url'] = f"https://www.google.com/maps/search/?api=1&query={address.replace(' ', '+')}"
-                        else:
-                            showtime['maps_url'] = f"https://www.google.com/maps/search/?api=1&query={showtime.get('theater', '').replace(' ', '+')}"
+                        elif theater:
+                            showtime['maps_url'] = f"https://www.google.com/maps/search/?api=1&query={theater.replace(' ', '+')}"
                 
                 movies = serpapi_movies
         
-        # STEP 2: Fallback - Get theaters from Google Places + let user type movie
+        # STEP 3: Fallback - Just show theaters, let user type movie
         if not movies:
-            theaters = []
-            if lat and lng and GOOGLE_PLACES_API_KEY:
-                theaters = get_nearby_theaters(float(lat), float(lng))
-            
-            if not theaters:
-                theaters = [
-                    {"name": f"PVR {city}", "address": city, "lat": lat, "lng": lng},
-                    {"name": f"INOX {city}", "address": city, "lat": lat, "lng": lng},
-                    {"name": f"Cinepolis {city}", "address": city, "lat": lat, "lng": lng}
-                ]
-            
             movies = [{
                 "title": "🔍 Type your movie below",
                 "rating": "-",
@@ -516,6 +513,8 @@ def wizard_movies():
         
     except Exception as e:
         print(f"❌ Wizard Movies Error: {e}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"movies": []})
 
 
@@ -882,10 +881,10 @@ def get_weather(city, country_code="IN"):
 # SERPAPI - REAL MOVIE SHOWTIMES FROM GOOGLE
 # ==================================================
 
-def get_serpapi_movie_showtimes(location, date=None):
+def get_serpapi_movie_showtimes(location, theaters=None):
     """
     Fetches REAL movie showtimes from Google via SerpAPI.
-    Uses google engine with 'showtimes near [location]' query.
+    Searches for a theater name to get movies playing there.
     """
     if not SERPAPI_KEY:
         print("⚠️ SerpAPI key not configured")
@@ -894,16 +893,20 @@ def get_serpapi_movie_showtimes(location, date=None):
     try:
         url = "https://serpapi.com/search"
         
-        # Use google engine with showtimes query
-        query = f"showtimes near {location}"
+        # If theaters provided, search for the first theater
+        # This returns movies playing at that theater
+        if theaters and len(theaters) > 0:
+            theater_name = theaters[0].get('name', 'PVR')
+            query = f"{theater_name} showtimes"
+        else:
+            query = f"PVR {location} showtimes"
         
         params = {
             "engine": "google",
             "q": query,
             "api_key": SERPAPI_KEY,
             "hl": "en",
-            "gl": "in",
-            "location": "India"
+            "gl": "in"
         }
         
         print(f"🎬 SerpAPI: Searching '{query}'")
@@ -912,40 +915,39 @@ def get_serpapi_movie_showtimes(location, date=None):
         
         movies = []
         
-        # SerpAPI returns showtimes in 'showtimes' key
-        for movie in data.get("showtimes", [])[:8]:
-            movie_title = movie.get("title", movie.get("name", "Unknown Movie"))
-            
-            # Get theaters and showtimes
-            showtimes = []
-            for theater in movie.get("theaters", [])[:3]:
-                theater_name = theater.get("name", "Theater")
-                theater_address = theater.get("address", theater.get("location", ""))
+        # When searching for a theater, response has showtimes[].movies[]
+        for day_data in data.get("showtimes", [])[:2]:  # Today and tomorrow
+            theater_name = day_data.get("name", "Theater")
+            for movie in day_data.get("movies", [])[:8]:
+                movie_name = movie.get("name", "Unknown")
                 
-                # Get show times for this theater
-                for show in theater.get("showing", [])[:4]:
-                    for time_slot in show.get("time", [])[:3]:
+                # Get showtimes for this movie at this theater
+                showtimes = []
+                for show in movie.get("showing", [])[:3]:
+                    for time_slot in show.get("time", [])[:4]:
                         showtimes.append({
-                            "time": time_slot if isinstance(time_slot, str) else time_slot.get("time", ""),
+                            "time": time_slot,
                             "theater": theater_name,
-                            "address": theater_address,
+                            "address": day_data.get("address", ""),
                             "type": show.get("type", "Standard")
                         })
-            
-            if showtimes:
-                movies.append({
-                    "title": movie_title,
-                    "rating": movie.get("rating", "N/A"),
-                    "genre": movie.get("genre", "Movie"),
-                    "duration": movie.get("duration", movie.get("length", "")),
-                    "showtimes": showtimes[:6]
-                })
+                
+                if showtimes:
+                    movies.append({
+                        "title": movie_name,
+                        "rating": movie.get("rating", "N/A"),
+                        "genre": movie.get("genre", "Movie"),
+                        "duration": movie.get("duration", movie.get("length", "")),
+                        "showtimes": showtimes[:4]
+                    })
         
         print(f"✅ SerpAPI: Found {len(movies)} movies with showtimes")
         return movies
         
     except Exception as e:
         print(f"❌ SerpAPI error: {e}")
+        import traceback
+        traceback.print_exc()
         return []
 
 
