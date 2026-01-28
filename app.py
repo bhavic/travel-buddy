@@ -100,12 +100,16 @@ def call_gemini(user_query: str, context: dict, preferences: dict) -> dict:
     if not GEMINI_API_KEY:
         return {"error": "GEMINI_API_KEY not configured"}
     
-    # Build context string
-    location = context.get('location', 'Unknown')
-    coords = context.get('coordinates', {})
-    local_time = context.get('local_time', datetime.now().strftime('%H:%M'))
-    local_hour = context.get('local_hour', datetime.now().hour)
-    timezone = context.get('timezone', 'Asia/Kolkata')
+    # Ensure context and preferences are not None
+    context = context or {}
+    preferences = preferences or {}
+    
+    # Build context string with null safety
+    location = context.get('location') or 'Unknown'
+    coords = context.get('coordinates') or {}
+    local_time = context.get('local_time') or datetime.now().strftime('%H:%M')
+    local_hour = context.get('local_hour') or datetime.now().hour
+    timezone = context.get('timezone') or 'Asia/Kolkata'
     
     # Determine time of day
     if local_hour < 6:
@@ -183,24 +187,53 @@ Search for real, current information and create a helpful plan. Use actual place
         # Extract the text response
         candidates = result.get('candidates', [])
         if not candidates:
+            print("❌ No candidates in response")
             return create_fallback_response(user_query, location)
         
         content = candidates[0].get('content', {})
         parts = content.get('parts', [])
         if not parts:
+            print("❌ No parts in response")
             return create_fallback_response(user_query, location)
         
         text = parts[0].get('text', '')
+        print(f"📝 Gemini response length: {len(text)} chars")
         
         # Parse JSON response
         try:
             # Clean up the response (remove markdown if present)
             text = text.strip()
-            if text.startswith('```'):
-                text = re.sub(r'^```json?\s*', '', text)
-                text = re.sub(r'\s*```$', '', text)
             
-            return json.loads(text)
+            # Try to find JSON object in the text
+            # First, try direct parse
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                pass
+            
+            # Remove markdown code blocks if present
+            if '```' in text:
+                # Extract content between ```json and ```
+                json_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', text)
+                if json_match:
+                    text = json_match.group(1).strip()
+                    try:
+                        return json.loads(text)
+                    except json.JSONDecodeError:
+                        pass
+            
+            # Try to find JSON object by looking for { and }
+            start_idx = text.find('{')
+            end_idx = text.rfind('}')
+            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+                json_str = text[start_idx:end_idx + 1]
+                return json.loads(json_str)
+            
+            # If all parsing fails
+            print(f"❌ Could not parse JSON from response")
+            print(f"Raw text preview: {text[:300]}")
+            return create_fallback_response(user_query, location)
+            
         except json.JSONDecodeError as e:
             print(f"❌ JSON Parse Error: {e}")
             print(f"Raw text: {text[:500]}")
@@ -211,6 +244,8 @@ Search for real, current information and create a helpful plan. Use actual place
         return create_fallback_response(user_query, location)
     except Exception as e:
         print(f"❌ Gemini API Exception: {e}")
+        import traceback
+        traceback.print_exc()
         return create_fallback_response(user_query, location)
 
 
