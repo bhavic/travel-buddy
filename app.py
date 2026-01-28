@@ -155,12 +155,7 @@ Search for real, current information and create a helpful plan. Use actual place
         },
         "tools": [
             {
-                "google_search_retrieval": {
-                    "dynamic_retrieval_config": {
-                        "mode": "MODE_DYNAMIC",
-                        "dynamic_threshold": 0.3
-                    }
-                }
+                "google_search": {}
             }
         ],
         "generationConfig": {
