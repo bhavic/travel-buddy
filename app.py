@@ -1,17 +1,18 @@
 """
-Travel Buddy - Gemini-Powered Travel Assistant
-Simple backend that lets Gemini 2.0 Flash handle all planning with Google Search grounding.
+Travel Buddy - Logistics Engine
+Optimized for Real-Time Data, Movies, and Sequential Planning.
 """
 
 import os
 import json
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
 
 app = Flask(__name__)
+# CORS setup is crucial for Shopify to talk to Render
 CORS(app, resources={r"/api/*": {
     "origins": "*",
     "allow_headers": ["Content-Type", "Accept"],
@@ -21,134 +22,139 @@ CORS(app, resources={r"/api/*": {
 # Configuration
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Gemini API endpoint (with Google Search grounding)
+# Endpoint for Gemini 2.0 Flash
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 
-# System prompt for Gemini
-SYSTEM_PROMPT = """You are Travel Buddy, a helpful local travel assistant that creates personalized plans.
+# ==========================================
+# THE "LOGISTICS ENGINE" PROMPT
+# ==========================================
+SYSTEM_PROMPT = """
+You are a "Logistics Expert & Travel Companion".
+Your job is to turn vague requests into EXACT, step-by-step plans with REAL data.
 
-CRITICAL RULES - FOLLOW THESE EXACTLY:
+CRITICAL RULES:
 
-1. TIME AWARENESS (VERY IMPORTANT):
-   - The user's CURRENT time is provided in the context. All plans MUST start AFTER this time.
-   - If it's 11 PM, don't suggest activities starting at 9 PM (that's in the past!)
-   - If user says "anytime today" and it's late, suggest TOMORROW instead
-   - Always acknowledge the current time in your plan
+1. STRICT TIME AWARENESS:
+   - User Current Time: {current_time}
+   - User Timezone: {timezone}
+   - You MUST plan activities starting AFTER the current time.
+   - If it is 11 PM, do NOT plan a movie for 9 PM. Plan for 11:30 PM or next day.
 
-2. LOCATION AWARENESS (VERY IMPORTANT):
-   - Use the user's coordinates to find the NEAREST theaters, restaurants, etc.
-   - Search for "theaters near [user's location]" not generic city-wide searches
-   - Never suggest places 30+ mins away when closer options exist
-   - Include actual distance/travel time from user's location
+2. DISTANCE & TRAVEL TIME:
+   - User Coordinates: {user_coords}
+   - You MUST estimate travel time between stops based on coordinates.
+   - Assume City Traffic Speed: ~25 km/h.
+   - Add a step like "🚗 Travel from Home to Theater (15 mins)" if moving between locations.
 
-3. REAL DATA ONLY:
-   - Search Google for ACTUAL current movie showtimes
-   - Include real showtime like "7:30 PM show at PVR" not "check BookMyShow"
-   - If you can't find showtimes, say so honestly
+3. REAL DATA - MOVIES (TOP PRIORITY):
+   - If the query involves "movie", "show", or "cinema":
+   - You MUST use the search tool to find: "Movies showing in {location} on {date}".
+   - Include SPECIFIC showtimes: "7:30 PM at PVR", "10:00 AM at INOX".
+   - DO NOT just say "Check BookMyShow". Give the real time or say "None found nearby".
 
-4. PARKING (when user has car):
-   - Include specific parking info: "Basement parking available, ₹50/hour"
-   - Mention if parking is free with movie ticket
+4. FOOD & PARKING:
+   - If user selected "Car", include parking info: "Basement parking free with ticket".
+   - Include specific restaurant names and cuisine type.
 
-5. FOOD DETAILS:
-   - Real restaurant names with cuisine type
-   - Average cost per person
-   - Whether reservation needed
+5. OUTPUT FORMAT (JSON ONLY):
+   - If this is a Plan/Day Plan/Wizard query, return type "day_plan".
+   - If this is a simple "Suggest X" query, return type "itinerary" with cards.
 
-You MUST respond in this exact JSON format (no markdown, just pure JSON):
+JSON SCHEMA FOR "day_plan":
 {
-  "greeting": "A friendly greeting that acknowledges current time and location",
   "type": "day_plan",
-  "day_title": "Title of the plan",
+  "greeting": "Friendly sentence",
+  "day_title": "Plan Name",
   "timeline": [
     {
-      "time": "7:30 PM",
-      "emoji": "🚗",
-      "activity": "What to do",
-      "place": "Specific place name",
-      "details": "Address, parking info, costs, practical details",
-      "google_query": "Exact place name for Google Maps",
-      "travel_time_to_next": "10 mins by car"
+      "time": "HH:MM AM/PM",
+      "emoji": "📍",
+      "activity": "Name of Activity",
+      "place": "Specific Place Name",
+      "details": "Address, Price, Parking, Duration",
+      "google_query": "Exact name for Maps",
+      "travel_time_to_next": "X mins"
     }
   ],
-  "total_budget_estimate": "₹X,XXX - ₹X,XXX",
-  "tips": ["Practical tip 1", "Practical tip 2"],
-  "closing": "Sign-off"
+  "total_budget_estimate": "₹X,XXX",
+  "tips": ["Tip 1"],
+  "closing": "Sign off"
 }
 
-Remember: 
-- Times must be AFTER the user's current time
-- Places must be NEAR the user's location  
-- Include REAL showtimes, prices, parking info"""
-
+JSON SCHEMA FOR "itinerary" (Simple list):
+{
+  "type": "itinerary",
+  "greeting": "...",
+  "cards": [
+    {
+      "title": "...",
+      "emoji": "📍",
+      "options": [{"name": "Place", "details": "..."}]
+    }
+  ]
+}
+"""
 
 def call_gemini(user_query: str, context: dict, preferences: dict) -> dict:
-    """Call Gemini 2.0 Flash with Google Search grounding."""
+    """Calls Gemini with forced Search Grounding."""
     
     if not GEMINI_API_KEY:
         return {"error": "GEMINI_API_KEY not configured"}
     
-    # Ensure context and preferences are not None
-    context = context or {}
-    preferences = preferences or {}
-    
-    # Build context string with null safety
+    # 1. Prepare Context
     location = context.get('location') or 'Unknown'
     coords = context.get('coordinates') or {}
     local_time = context.get('local_time') or datetime.now().strftime('%H:%M')
     local_hour = context.get('local_hour') or datetime.now().hour
     timezone = context.get('timezone') or 'Asia/Kolkata'
     
-    # Determine time of day
-    if local_hour < 6:
-        time_of_day = "late night"
-    elif local_hour < 12:
-        time_of_day = "morning"
-    elif local_hour < 17:
-        time_of_day = "afternoon"
-    elif local_hour < 21:
-        time_of_day = "evening"
-    else:
-        time_of_day = "night"
+    # Format Coordinates for readability
+    coord_str = f"{coords.get('lat', 'N/A')}, {coords.get('lng', 'N/A')}"
     
-    # Build user context
-    context_str = f"""
+    # 2. Date Logic (Crucial for Movies)
+    today = datetime.now()
+    tomorrow = today + timedelta(days=1)
+    date_str = today.strftime('%A, %B %d')
+    tomorrow_str = tomorrow.strftime('%A, %B %d')
+
+    # 3. Detect Intent (Movie vs General)
+    is_movie_intent = any(kw in user_query.lower() for kw in ['movie', 'film', 'show', 'cinema', 'watch'])
+    
+    # 4. Inject Specific Instructions for Movies
+    search_hint = ""
+    if is_movie_intent:
+        # Force AI to search for TODAY's or TOMORROW's movies
+        if local_hour < 18: # Before 6 PM, assume today
+            search_hint = f"CRITICAL: Search for 'Movies showing in {location} today ({date_str})'. Find specific showtimes."
+        else:
+            search_hint = f"CRITICAL: Search for 'Movies showing in {location} tomorrow ({tomorrow_str})' as it is late."
+    
+    # 5. Build the Final Context String
+    context_block = f"""
 USER CONTEXT:
 - Location: {location}
-- Coordinates: {coords.get('lat', 'N/A')}, {coords.get('lng', 'N/A')}
-- Current Time: {local_time} ({time_of_day})
+- Coordinates: {coord_str}
+- Current Time: {local_time}
 - Timezone: {timezone}
-- Date: {datetime.now().strftime('%A, %B %d, %Y')}
+- Date: {date_str}
+- Preferences: {json.dumps(preferences)}
 
-USER PREFERENCES:
-- Food: {preferences.get('food', 'any')}
-- Budget: {preferences.get('budget', 'standard')}
-- Vibe: {preferences.get('vibe', 'balanced')}
+USER REQUEST: {user_query}
 
-USER REQUEST:
-{user_query}
+{search_hint}
 
-Search for real, current information and create a helpful plan. Use actual place names, addresses, and current showtimes/hours."""
+Use Google Search to find REAL information. If querying locations, use the coordinates to find the NEAREST options.
+"""
 
-    # Prepare API request with Google Search grounding
+    # 6. API Payload
     payload = {
-        "contents": [
-            {
-                "role": "user",
-                "parts": [{"text": context_str}]
-            }
-        ],
-        "systemInstruction": {
-            "parts": [{"text": SYSTEM_PROMPT}]
-        },
-        "tools": [
-            {
-                "google_search": {}
-            }
-        ],
+        "contents": [{"role": "user", "parts": [{"text": context_block}]}],
+        "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+        "tools": [{"google_search": {}}], # Enable Grounding
         "generationConfig": {
             "temperature": 0.7,
-            "maxOutputTokens": 4096
+            "maxOutputTokens": 4096,
+            "responseMimeType": "application/json" # Force JSON output mode
         }
     }
     
@@ -161,172 +167,93 @@ Search for real, current information and create a helpful plan. Use actual place
         )
         
         if response.status_code != 200:
-            print(f"❌ Gemini API Error: {response.status_code}")
-            print(response.text)
+            print(f"❌ Gemini Error: {response.status_code} - {response.text}")
             return create_fallback_response(user_query, location)
         
         result = response.json()
         
-        # Extract the text response
-        candidates = result.get('candidates', [])
-        if not candidates:
-            print("❌ No candidates in response")
-            return create_fallback_response(user_query, location)
-        
-        content = candidates[0].get('content', {})
-        parts = content.get('parts', [])
-        if not parts:
-            print("❌ No parts in response")
-            return create_fallback_response(user_query, location)
-        
-        text = parts[0].get('text', '')
-        print(f"📝 Gemini response length: {len(text)} chars")
-        
-        # Parse JSON response
+        # Deep extraction of text
         try:
-            # Clean up the response (remove markdown if present)
-            text = text.strip()
-            
-            # Try to find JSON object in the text
-            # First, try direct parse
-            try:
-                return json.loads(text)
-            except json.JSONDecodeError:
-                pass
-            
-            # Remove markdown code blocks if present
-            if '```' in text:
-                # Extract content between ```json and ```
-                json_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', text)
-                if json_match:
-                    text = json_match.group(1).strip()
-                    try:
-                        return json.loads(text)
-                    except json.JSONDecodeError:
-                        pass
-            
-            # Try to find JSON object by looking for { and }
-            start_idx = text.find('{')
-            end_idx = text.rfind('}')
-            if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
-                json_str = text[start_idx:end_idx + 1]
-                return json.loads(json_str)
-            
-            # If all parsing fails
-            print(f"❌ Could not parse JSON from response")
-            print(f"Raw text preview: {text[:300]}")
+            text = result['candidates'][0]['content']['parts'][0]['text']
+        except (KeyError, IndexError):
+            print("❌ Invalid response structure from Gemini")
             return create_fallback_response(user_query, location)
-            
-        except json.JSONDecodeError as e:
-            print(f"❌ JSON Parse Error: {e}")
-            print(f"Raw text: {text[:500]}")
-            return create_fallback_response(user_query, location)
-            
-    except requests.exceptions.Timeout:
-        print("❌ Gemini API Timeout")
-        return create_fallback_response(user_query, location)
+
+        # Parse JSON
+        try:
+            # Sometimes response adds markdown, strip it
+            text = text.replace('```json', '').replace('```', '').strip()
+            return json.loads(text)
+        except json.JSONDecodeError:
+            # Fallback regex parsing (robust)
+            match = re.search(r'\{.*\}', text, re.DOTALL)
+            if match:
+                return json.loads(match.group(0))
+            else:
+                print("❌ Could not parse JSON from response")
+                return create_fallback_response(user_query, location)
+
     except Exception as e:
-        print(f"❌ Gemini API Exception: {e}")
+        print(f"❌ Server Error: {e}")
         import traceback
         traceback.print_exc()
         return create_fallback_response(user_query, location)
 
-
 def create_fallback_response(query: str, location: str) -> dict:
-    """Create a fallback response when Gemini fails."""
+    """Smart fallback if AI fails."""
     return {
-        "greeting": f"I'm having trouble searching right now, but here are some ideas for {location}! 🌟",
         "type": "itinerary",
+        "greeting": "I'm having a little trouble connecting right now.",
         "cards": [
             {
-                "emoji": "🔍",
                 "title": "Search on Google Maps",
-                "subtitle": "Find great places near you",
+                "subtitle": f"Find '{query}' near {location}",
                 "card_type": "primary",
                 "options": [
                     {
                         "name": f"Search: {query}",
-                        "highlight": "Tap to search on Google Maps",
-                        "details": f"Find options in {location}",
-                        "google_query": f"{query} in {location}",
-                        "tags": ["Search"]
+                        "details": "Tap to open Google Maps",
+                        "google_query": f"{query} in {location}"
                     }
                 ]
             }
         ],
-        "closing": "Try again in a moment, or search directly on Google Maps!"
+        "closing": "Please try again in a moment!"
     }
 
-
-# ===========================================
-# API ENDPOINTS
-# ===========================================
+# ==========================================
+# ROUTES
+# ==========================================
 
 @app.route('/api/assist', methods=['POST', 'OPTIONS'])
 def assist():
-    """Main endpoint - sends everything to Gemini for intelligent planning."""
     if request.method == 'OPTIONS':
-        return '', 204
+        return '', 204 # CORS Preflight
     
     try:
         data = request.json or {}
-        
         query = data.get('query', '')
         context = data.get('context', {})
         preferences = data.get('preferences', {})
         
-        print(f"📥 Query: {query}")
-        print(f"📍 Location: {context.get('location', 'Unknown')}")
-        print(f"🕐 Time: {context.get('local_time', 'Unknown')}")
+        print(f"📥 Incoming Query: {query}")
         
-        if not query:
-            return jsonify({
-                "greeting": "Hey! What would you like to do? 🤔",
-                "type": "error",
-                "cards": [],
-                "closing": "Tell me what you're in the mood for!"
-            })
-        
-        # Call Gemini with full context
         result = call_gemini(query, context, preferences)
         
+        # Ensure type is set
+        if 'type' not in result:
+            result['type'] = 'itinerary'
+            
         return jsonify(result)
         
     except Exception as e:
-        print(f"❌ Error: {e}")
-        return jsonify({
-            "greeting": "Oops, something went wrong! 😅",
-            "type": "error",
-            "cards": [],
-            "closing": "Please try again!"
-        }), 500
-
+        print(f"❌ API Route Error: {e}")
+        return jsonify({"type": "error", "greeting": "Something went wrong."}), 500
 
 @app.route('/api/health', methods=['GET'])
 def health():
-    """Health check endpoint."""
-    return jsonify({
-        "status": "ok",
-        "gemini_configured": bool(GEMINI_API_KEY),
-        "timestamp": datetime.now().isoformat()
-    })
-
-
-@app.route('/', methods=['GET'])
-def home():
-    """Home page."""
-    return jsonify({
-        "name": "Travel Buddy API",
-        "version": "2.0 (Gemini-powered)",
-        "endpoints": {
-            "/api/assist": "POST - Main assistant endpoint",
-            "/api/health": "GET - Health check"
-        }
-    })
-
+    return jsonify({"status": "ok", "service": "Travel Buddy V3"})
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
-    print(f"🚀 Travel Buddy starting on port {port}")
-    print(f"🔑 Gemini API Key: {'✅ Configured' if GEMINI_API_KEY else '❌ Missing'}")
     app.run(host='0.0.0.0', port=port, debug=True)
